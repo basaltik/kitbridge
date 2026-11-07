@@ -1,0 +1,445 @@
+{
+ "_c4d": 2027000,
+ "com.redshift3d.redshift4c4d.nodes.core.standardmaterial": {
+  "in": {
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.rs_uv_context": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.base_color": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.ms_phase": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.ms_radius_scale": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.ms_radius": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.ms_amount": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.ms_color": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refr_abbe": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refr_roughness": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refr_weight": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refr_color": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.coat_bump_input": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.coat_ior": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.coat_roughness": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.coat_weight": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.coat_color": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.sheen_roughness": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.sheen_weight": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.sheen_color": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_aniso_rotation": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_aniso": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_ior": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_roughness": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_weight": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_color": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.emission_weight": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.emission_color": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.bump_input": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.opacity_color": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.overall_color": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.metalness": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.diffuse_roughness": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.base_color_weight": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.diffuse_model": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_samples": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refr_samples": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.ss_depth": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.ss_scatter_color": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.ss_phase": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.ss_samples": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.ms_mode": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.ms_samples": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.ms_include_mode": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.sheen_samples": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.thinfilm_ior": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.thinfilm_thickness": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.coat_aniso": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.coat_aniso_rotation": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.coat_samples": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refr_thin_walled": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.overallaffectsemission": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.depth_override": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_depth": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_enablecutoff": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_cutoff": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refr_depth": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refr_enablecutoff": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refr_cutoff": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.combined_depth": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.diffuse_direct": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.diffuse_indirect": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_direct": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_indirect": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_isglossiness": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_endmode": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refr_direct": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.shadow_affected_by_fresnel_mode": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.shadow_opacity": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refr_isglossiness": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.affects_alpha": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.block_volumes": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refr_legacy_light_sampling": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.sheen_direct": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.sheen_indirect": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.sheen_isglossiness": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.coat_direct": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.coat_indirect": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.coat_isglossiness": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_enablemultiscattercomp": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.anisotropy_orientation": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.anisotropy_uvchannel": null,
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.anisotropy_tangentchannel": null
+  },
+  "out": {
+   "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.outcolor": null
+  }
+ },
+ "com.redshift3d.redshift4c4d.nodes.core.texturesampler": {
+  "in": {
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.color_multiplier": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.tex0": {
+    "path": null,
+    "frameend": null,
+    "framestart": null,
+    "colorspace": null,
+    "layerset": null,
+    "framerate": null,
+    "animation": null,
+    "frozencolorspace": null,
+    "frozencolorspacepath": null,
+    "timing": null,
+    "rangestart": null,
+    "rangeend": null,
+    "loops": null,
+    "startoffset": null
+   },
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.tex0_gamma": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.tspace_id": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.mirroru": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.mirrorv": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.wrapu": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.wrapv": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.scale": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.offset": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.rotate": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.uv_context": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.color_offset": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.alpha_multiplier": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.alpha_offset": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.invalid_color": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.alpha_is_luminance": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.filter_enable_type": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.filter_bicubic": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.prefer_sharp": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.mip_bias": null,
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.tone_map_enable": null
+  },
+  "out": {
+   "com.redshift3d.redshift4c4d.nodes.core.texturesampler.outcolor": null
+  }
+ },
+ "com.redshift3d.redshift4c4d.nodes.core.bumpmap": {
+  "in": {
+   "com.redshift3d.redshift4c4d.nodes.core.bumpmap.input": null,
+   "com.redshift3d.redshift4c4d.nodes.core.bumpmap.inuse": null,
+   "com.redshift3d.redshift4c4d.nodes.core.bumpmap.scale": null,
+   "com.redshift3d.redshift4c4d.nodes.core.bumpmap.inputtype": null,
+   "com.redshift3d.redshift4c4d.nodes.core.bumpmap.factorinobjscale": null,
+   "com.redshift3d.redshift4c4d.nodes.core.bumpmap.oldrange_min": null,
+   "com.redshift3d.redshift4c4d.nodes.core.bumpmap.oldrange_max": null,
+   "com.redshift3d.redshift4c4d.nodes.core.bumpmap.newrange_min": null,
+   "com.redshift3d.redshift4c4d.nodes.core.bumpmap.newrange_max": null,
+   "com.redshift3d.redshift4c4d.nodes.core.bumpmap.unbiasednormalmap": null,
+   "com.redshift3d.redshift4c4d.nodes.core.bumpmap.flipy": null,
+   "com.redshift3d.redshift4c4d.nodes.core.bumpmap.legacynormalmap": null
+  },
+  "out": {
+   "com.redshift3d.redshift4c4d.nodes.core.bumpmap.out": null
+  }
+ },
+ "com.redshift3d.redshift4c4d.nodes.core.displacement": {
+  "in": {
+   "com.redshift3d.redshift4c4d.nodes.core.displacement.scale": null,
+   "com.redshift3d.redshift4c4d.nodes.core.displacement.texmap": null,
+   "com.redshift3d.redshift4c4d.nodes.core.displacement.map_encoding": null,
+   "com.redshift3d.redshift4c4d.nodes.core.displacement.space_type": null,
+   "com.redshift3d.redshift4c4d.nodes.core.displacement.tangents": null,
+   "com.redshift3d.redshift4c4d.nodes.core.displacement.oldrange_min": null,
+   "com.redshift3d.redshift4c4d.nodes.core.displacement.oldrange_max": null,
+   "com.redshift3d.redshift4c4d.nodes.core.displacement.newrange_min": null,
+   "com.redshift3d.redshift4c4d.nodes.core.displacement.newrange_max": null,
+   "com.redshift3d.redshift4c4d.nodes.core.displacement.uv_context": null,
+   "com.redshift3d.redshift4c4d.nodes.core.displacement.tspace_id": null
+  },
+  "out": {
+   "com.redshift3d.redshift4c4d.nodes.core.displacement.out": null
+  }
+ },
+ "com.redshift3d.redshift4c4d.node.output": {
+  "in": {
+   "com.redshift3d.redshift4c4d.node.output.displacement": null,
+   "com.redshift3d.redshift4c4d.node.output.surface": null,
+   "com.redshift3d.redshift4c4d.node.output.rs_uv_context": null,
+   "com.redshift3d.redshift4c4d.node.output.contour": null,
+   "com.redshift3d.redshift4c4d.node.output.light": null,
+   "com.redshift3d.redshift4c4d.node.output.environment": null,
+   "com.redshift3d.redshift4c4d.node.output.volume": null,
+   "com.redshift3d.redshift4c4d.node.output.viewport": null,
+   "com.redshift3d.redshift4c4d.node.output.materialid": null
+  },
+  "out": {}
+ },
+ "com.redshift3d.redshift4c4d.nodes.core.rsmathinv": {
+  "in": {
+   "com.redshift3d.redshift4c4d.nodes.core.rsmathinv.input": null,
+   "com.redshift3d.redshift4c4d.nodes.core.rsmathinv.math_op": null
+  },
+  "out": {
+   "com.redshift3d.redshift4c4d.nodes.core.rsmathinv.out": null
+  }
+ },
+ "com.redshift3d.redshift4c4d.nodes.core.rscolorsplitter": {
+  "in": {
+   "com.redshift3d.redshift4c4d.nodes.core.rscolorsplitter.input": null
+  },
+  "out": {
+   "com.redshift3d.redshift4c4d.nodes.core.rscolorsplitter.outr": null,
+   "com.redshift3d.redshift4c4d.nodes.core.rscolorsplitter.outg": null,
+   "com.redshift3d.redshift4c4d.nodes.core.rscolorsplitter.outb": null,
+   "com.redshift3d.redshift4c4d.nodes.core.rscolorsplitter.outa": null
+  }
+ },
+ "com.autodesk.arnold.shader.standard_surface": {
+  "in": {
+   "normal": null,
+   "metalness": null,
+   "subsurface_anisotropy": null,
+   "subsurface_scale": null,
+   "subsurface_radius": null,
+   "subsurface_color": null,
+   "coat_normal": null,
+   "coat_roughness": null,
+   "coat_color": null,
+   "sheen_roughness": null,
+   "sheen_color": null,
+   "transmission_color": null,
+   "diffuse_roughness": null,
+   "opacity": null,
+   "emission_color": null,
+   "specular_color": null,
+   "thin_walled": null,
+   "thin_film_IOR": null,
+   "thin_film_thickness": null,
+   "emission": null,
+   "sheen": null,
+   "coat_affect_roughness": null,
+   "coat_affect_color": null,
+   "coat_IOR": null,
+   "coat_rotation": null,
+   "coat_anisotropy": null,
+   "coat": null,
+   "subsurface": null,
+   "transmission_extra_roughness": null,
+   "transmission_dispersion": null,
+   "transmission_scatter_anisotropy": null,
+   "transmission_scatter": null,
+   "transmission_depth": null,
+   "transmission": null,
+   "specular_rotation": null,
+   "specular_anisotropy": null,
+   "specular_IOR": null,
+   "specular_roughness": null,
+   "specular": null,
+   "base_color": null,
+   "base": null,
+   "tangent": null,
+   "material_type": null,
+   "transmission_shadow_density": null,
+   "transmit_aovs": null,
+   "dielectric_priority": null,
+   "uniform_sss_radius": null,
+   "subsurface_type": null,
+   "id1": null,
+   "aov_id1": null,
+   "id2": null,
+   "aov_id2": null,
+   "id3": null,
+   "aov_id3": null,
+   "id4": null,
+   "aov_id4": null,
+   "id5": null,
+   "aov_id5": null,
+   "id6": null,
+   "aov_id6": null,
+   "id7": null,
+   "aov_id7": null,
+   "id8": null,
+   "aov_id8": null,
+   "caustics": null,
+   "internal_reflections": null,
+   "exit_to_background": null,
+   "indirect_diffuse": null,
+   "indirect_specular": null
+  },
+  "out": {
+   "output": null
+  }
+ },
+ "com.autodesk.arnold.shader.image": {
+  "in": {
+   "multiply": null,
+   "filter": null,
+   "offset": null,
+   "timing_rangeto": null,
+   "filename": null,
+   "timing_rangefrom": null,
+   "color_space": null,
+   "mipmap_bias": null,
+   "single_channel": null,
+   "start_channel": null,
+   "ignore_missing_textures": null,
+   "missing_texture_color": null,
+   "uvset": null,
+   "uvcoords": null,
+   "swrap": null,
+   "twrap": null,
+   "sscale": null,
+   "tscale": null,
+   "uniform_scale": null,
+   "tflip": null,
+   "sflip": null,
+   "soffset": null,
+   "toffset": null,
+   "swap_st": null,
+   "timing_mode": null,
+   "timing_enable": null,
+   "timing_timing": null,
+   "timing_loops": null,
+   "timing_from": null,
+   "timing_to": null,
+   "timing_fps": null,
+   "color_correct_link": null,
+   "color_correct.input": null,
+   "color_correct.gamma": null,
+   "color_correct.invert": null,
+   "color_correct.hue_shift": null,
+   "color_correct.saturation": null,
+   "color_correct.contrast": null,
+   "color_correct.contrast_pivot": null,
+   "color_correct.exposure": null,
+   "color_correct.multiply": null,
+   "color_correct.add": null,
+   "color_correct.mask": null,
+   "color_correct.invert_alpha": null,
+   "color_correct.alpha_is_luminance": null,
+   "color_correct.alpha_multiply": null,
+   "color_correct.alpha_add": null,
+   "color_correct_added": null
+  },
+  "out": {
+   "output": null,
+   "output.g": null,
+   "output.r": null,
+   "output.b": null,
+   "output.a": null
+  }
+ },
+ "com.autodesk.arnold.shader.normal_map": {
+  "in": {
+   "input": null,
+   "strength": null,
+   "normal": null,
+   "tangent": null,
+   "color_to_signed": null,
+   "tangent_space": null,
+   "order": null,
+   "invert_x": null,
+   "invert_y": null,
+   "invert_z": null
+  },
+  "out": {
+   "output": null,
+   "output.y": null,
+   "output.z": null,
+   "output.x": null
+  }
+ },
+ "com.autodesk.arnold.shader.bump2d": {
+  "in": {
+   "normal": null,
+   "bump_map": null,
+   "bump_height": null
+  },
+  "out": {
+   "output": null,
+   "output.y": null,
+   "output.z": null,
+   "output.x": null
+  }
+ },
+ "com.autodesk.arnold.material": {
+  "in": {
+   "alpha": null,
+   "displacement": null,
+   "shader": null,
+   "viewport": null
+  },
+  "out": {}
+ },
+ "com.autodesk.arnold.shader.uv_transform": {
+  "in": {
+   "unit": null,
+   "space": null,
+   "rotate": null,
+   "repeat": null,
+   "passthrough": null,
+   "offset": null,
+   "pivot": null,
+   "uvset": null,
+   "uvcoords": null,
+   "uniform_scale": null,
+   "wset": null,
+   "coverage": null,
+   "scale_frame": null,
+   "translate_frame": null,
+   "rotate_frame": null,
+   "pivot_frame": null,
+   "wrap_frame_u": null,
+   "wrap_frame_v": null,
+   "wrap_frame_color": null,
+   "noise": null,
+   "mirror_u": null,
+   "mirror_v": null,
+   "flip_u": null,
+   "flip_v": null,
+   "swap_uv": null,
+   "stagger": null,
+   "uvw_matrix__matrix_mode": null,
+   "uvw_matrix": null,
+   "uvw_matrix__matrix_v2": null,
+   "uvw_matrix__matrix_off": null,
+   "uvw_matrix__matrix_v1": null,
+   "uvw_matrix__matrix_v3": null
+  },
+  "out": {
+   "output": null,
+   "output.g": null,
+   "output.r": null,
+   "output.b": null,
+   "output.a": null
+  }
+ },
+ "com.autodesk.arnold.shader.complement": {
+  "in": {
+   "input": null
+  },
+  "out": {
+   "output": null,
+   "output.g": null,
+   "output.r": null,
+   "output.b": null
+  }
+ },
+ "_rs_default_graph_nodes": [
+  "(com.redshift3d.redshift4c4d.node.output,)",
+  "(com.redshift3d.redshift4c4d.nodes.core.standardmaterial,)"
+ ],
+ "_arnold_default_graph_nodes": [
+  "(com.autodesk.arnold.material,)"
+ ]
+}

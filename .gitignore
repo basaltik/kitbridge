@@ -1,0 +1,8 @@
+research/
+plugin/kitbridge/client/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+
+dist/

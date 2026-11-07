@@ -1,0 +1,33 @@
+"libraryfolders"
+{
+	"0"
+	{
+		"path"		"C:\\Program Files (x86)\\Steam"
+		"label"		""
+		"contentid"		"123456789"
+		"totalsize"		"0"
+		"apps"
+		{
+			"228980"		"200000"
+		}
+	}
+	"1"
+	{
+		"path"		"D:\\Games\\steam"
+		"label"		"Games"
+		"contentid"		"987654321"
+		"totalsize"		"1000000000"
+		"apps"
+		{
+			"365670"		"1548291042"
+		}
+	}
+	"2"
+	{
+		"path"		"E:\\SteamLibrary"
+		"label"		"Archive"
+		"apps"
+		{
+		}
+	}
+}
