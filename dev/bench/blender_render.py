@@ -24,11 +24,18 @@ def _has_displacement(mat):
 def _subdivide_displaced(objs):
     """Cycles displaces only existing vertices; Redshift tessellates. Give displaced meshes enough
     vertices (like Redshift's tessellation) so the reference doesn't miss relief between vertices."""
+    budget = 400_000  # faces per object after subdivision; level 4 on a big model ran Blender out of 38 GB
     for o in objs:
         if any(_has_displacement(s.material) for s in o.material_slots):
+            faces = max(1, len(o.data.polygons))
+            level = 0
+            while level < 4 and faces * 4 ** (level + 1) <= budget:
+                level += 1
+            if level == 0:
+                continue
             mod = o.modifiers.new("Kitbridge bench subdivision", "SUBSURF")
             mod.subdivision_type = "SIMPLE"   # add vertices without shrinking the shape
-            mod.levels = mod.render_levels = 4
+            mod.levels = mod.render_levels = level
 
 
 def _setup_world(hdr_path):

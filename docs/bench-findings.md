@@ -24,3 +24,17 @@ Order: 1 (likely a plain bug), 2, 4, 3, 5; 6 before judging any glass change.
 | 4 | **Mostly fixed.** UDIM tiles export with a `<UDIM>` token; package validation accepts tiles; Redshift reads the token as is, Arnold gets `<udim>`, Standard uses the first tile. Urban Loft: SSIM 0.896 → 0.923, ΔE 12.8 → 9.6, brick now textured, but dark rectangular patches remain on the facade — check which map (metallic? normal?) is offset per tile. |
 | 5 | Not started. |
 | 6 | Not started. |
+
+## Run 2 (2026-11-08, exporter v5, fair glass + subdivided displacement references)
+
+Median SSIM 0.949 → **0.982**, median ΔE 5.4 → **4.6**, silhouettes off (IoU < 0.9) 7 → 5.
+Big gains: Glass Door 0.869 → 0.989 (ΔE 36.3 → 4.6), Glass door frosted 0.904 → 0.986, Glass
+Handrail 0.915 → 0.978, Wood Veneer Walnut 0.933 → 0.999, Wood 0.882 → 0.919, Urban Loft 0.896 → 0.923.
+Small drops to look at: Brick Apartments 0.922 → 0.893, Whisky bottle 0.968 → 0.940, Glass bricks
+0.943 → 0.929 (new references count glass as transparent, so these may be reference changes).
+
+Worst now: Bosch range 0.766 (brushed steel too dark), Kitchen glass container/pots ~0.89 (ΔE ~15),
+Wood Fluted Panel 0.891 (object-space pattern direction), Brick Apartments 0.893, Glass bricks
+array 0.903, lamp 0.921 (ΔE 44: shade glow, see #3).
+Bench note: SIMPLE subdivision is now capped at 400k faces per object (level 4 on a large model
+made Blender ask for 38 GB and crash). Reference for 526cec87 still fails — check.
