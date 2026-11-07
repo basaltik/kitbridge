@@ -77,7 +77,11 @@ def render(params):
                 m.displacement_method = "BUMP"
     else:
         _subdivide_displaced(objs)
-    corners = [o.matrix_world @ Vector(c) for o in objs for c in o.bound_box]
+    # Frame by real vertices like c4d_render.py: bound_box corners of rotated objects overstate the
+    # box (KITCHEN SET 5: 12-20% wider), which pushed the camera back and shrank the reference.
+    # Evaluated meshes: modifiers (Mirror, Solidify...) are applied in the exported FBX too.
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    corners = [o.matrix_world @ v.co for o in objs for v in o.evaluated_get(depsgraph).data.vertices]
     lo = Vector((min(p.x for p in corners), min(p.y for p in corners), min(p.z for p in corners)))
     hi = Vector((max(p.x for p in corners), max(p.y for p in corners), max(p.z for p in corners)))
     target = (lo + hi) * 0.5; radius = (hi - lo).length * 0.5  # half diagonal, as in c4d_render.py

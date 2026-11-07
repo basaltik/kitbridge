@@ -53,3 +53,17 @@ Still open: the range body renders near-black in Redshift vs dark grey in Cycles
 `Dual_Fuel_Range_stil01` (AO-driven base colour, metallic 1, roughness 0.25, image bump) now
 exports its bump, but the large body panels probably use another material — identify which
 material the front/side panels use, then compare its Cycles vs Redshift response.
+
+## Runs 3–4 (2026-11-08, exporter v6)
+Run 3 (pristine bakes, fine normals, SSS/translucency): median SSIM 0.985, ΔE 4.56.
+Run 4 (bench framing fix): references framed by the evaluated mesh's vertices like the C4D side,
+not by bound_box corners (rotated objects overstated the box 12–20% and shrank the reference).
+Kitchen glass container 0.886 → 0.923, glass pots 0.891 → 0.942. Median SSIM 0.985, ΔE 4.56,
+IoU < 0.9: 5.
+Metals checked separately: a 0.149 / metallic 1 / roughness 0.41 sphere under the bench HDRI gives
+mean sRGB 0.109 in Cycles and 0.126 in Redshift — metals transfer fine. The Bosch range body is
+dark because `stil01` derives its colour from Ambient Occlusion (scene-dependent bake): model
+quirk, deprioritised.
+Worst now: Bosch 0.764 (above), Wood Fluted Panel 0.873 (object-space pattern direction in the
+reference), Brick Apartments 0.893, Glass bricks array 0.903, "Wood" material 0.914 (ΔE 9.5),
+lamp 0.921 (Redshift caustics, see #3).
