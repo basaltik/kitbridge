@@ -57,7 +57,7 @@ from kitbridge.core import shader_graph  # noqa: E402
 
 SCHEMA_VERSION = 1
 # Keep equal to pipeline.EXPORTER_VERSION; raise both when packages need converting again.
-EXPORTER_VERSION = 2
+EXPORTER_VERSION = 3  # 3: WebP/AVIF textures converted to PNG
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -437,6 +437,30 @@ def _ext_for_image(image: Any, source_path: str) -> str:
     return fmt_map.get(fmt, ".png")
 
 
+# Formats Blender reads but Redshift / Arnold / C4D bitmaps don't: Redshift shows its magenta
+# "invalid texture" colour (Blendkit started shipping WebP in 2026).
+_CONVERT_TO_PNG = (".webp", ".avif")
+
+
+def _convert_to_png(image: Any, path: str, tex_dir: str, claimed: Set[str]) -> str:
+    """Re-save *image* (already loaded from *path*) as PNG next to it; return the new path."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    claimed.discard(os.path.basename(path).lower())
+    png_path = _unique_texture_path(tex_dir, stem + ".png", claimed)
+    if not image.has_data:
+        image.reload()
+    _ = image.pixels[0]  # background Blender loads pixels lazily; save() fails on an unloaded image
+    image.file_format = "PNG"
+    image.filepath_raw = png_path
+    image.save()  # raw pixels, no view transform: colour and data maps stay exact
+    if not (os.path.isfile(png_path) and os.path.getsize(png_path) > 0):
+        raise RuntimeError("PNG was not written")
+    with contextlib.suppress(OSError):
+        os.remove(path)
+    log_info(f"texture: converted {os.path.basename(path)} -> {os.path.basename(png_path)}")
+    return png_path
+
+
 def _unique_texture_path(tex_dir: str, desired_name: str, claimed: Set[str]) -> str:
     stem, ext = os.path.splitext(desired_name)
     safe_stem = _safe_filename(stem, "tex")
@@ -537,6 +561,14 @@ def unpack_and_collect_textures(output_dir: str, max_texture_size: int = 0) -> N
         image.filepath_raw = target_abs
         with contextlib.suppress(Exception):
             image.reload()
+
+        if os.path.splitext(target_abs)[1].lower() in _CONVERT_TO_PNG:
+            try:
+                target_abs = _convert_to_png(image, target_abs, tex_dir, claimed)
+                image.filepath = target_abs
+            except Exception as exc:
+                emit_warning(f"Texture '{image.name}' is {os.path.splitext(target_abs)[1]} and could "
+                             f"not be converted to PNG ({exc}); renderers may show it magenta.")
 
         # Respect max_texture_size by downscaling copies on disk
         if max_texture_size > 0:
