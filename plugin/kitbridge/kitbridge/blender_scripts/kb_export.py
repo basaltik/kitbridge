@@ -57,7 +57,7 @@ from kitbridge.core import shader_graph  # noqa: E402
 
 SCHEMA_VERSION = 1
 # Keep equal to pipeline.EXPORTER_VERSION; raise both when packages need converting again.
-EXPORTER_VERSION = 3  # 3: WebP/AVIF textures converted to PNG
+EXPORTER_VERSION = 4  # 3: WebP/AVIF textures converted to PNG; 4: normalized relief bakes
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -1001,7 +1001,7 @@ def _ensure_uvs_on_material_objects(mat: Any, objs: List[Any]) -> Tuple[str, Opt
 
 
 def _save_baked_image(image: Any, out_path: str, is_non_color: bool, scene: Any) -> None:
-    """Save *image* as 8-bit sRGB PNG (color) or 16-bit Non-Color PNG (data)."""
+    """Save *image* as 8-bit sRGB PNG or 16-bit Non-Color PNG without a view transform."""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     img_settings = scene.render.image_settings
     saved_fmt = img_settings.file_format
@@ -1013,10 +1013,17 @@ def _save_baked_image(image: Any, out_path: str, is_non_color: bool, scene: Any)
         img_settings.color_mode = "RGB"
         image.filepath_raw = out_path
         image.file_format = "PNG"
+        saved_view_transform = scene.view_settings.view_transform
+        if is_non_color:
+            with contextlib.suppress(Exception):
+                scene.view_settings.view_transform = "Raw"
         try:
             image.save_render(filepath=out_path, scene=scene)
         except Exception:
             image.save()
+        finally:
+            with contextlib.suppress(Exception):
+                scene.view_settings.view_transform = saved_view_transform
     finally:
         with contextlib.suppress(Exception):
             img_settings.file_format = saved_fmt
@@ -1414,6 +1421,26 @@ def _bake_material_channels(
                 else:
                     bpy.ops.object.bake(type="EMIT", use_clear=False)
 
+                raw_midlevel = raw_scale = None
+                if ch_name == "displacement":
+                    disp_node = (
+                        output_node.inputs["Displacement"].links[0].from_node
+                        if output_node.inputs.get("Displacement")
+                        and output_node.inputs["Displacement"].is_linked
+                        else None
+                    )
+                    raw_midlevel = float(
+                        shader_graph.get_input_socket(disp_node, "Midlevel").default_value
+                    ) if disp_node is not None and disp_node.bl_idname == "ShaderNodeDisplacement" else 0.5
+                    raw_scale = float(
+                        shader_graph.get_input_socket(disp_node, "Scale").default_value
+                    ) if disp_node is not None and disp_node.bl_idname == "ShaderNodeDisplacement" else 0.05
+                    method = str(getattr(mat.cycles, "displacement_method", "") or "")
+                    log_info(
+                        f"bake: displacement stats before normalization for {mat.name!r}: "
+                        f"midlevel={raw_midlevel:.9g}, scale={raw_scale:.9g}, method={method!r}"
+                    )
+
                 is_const_bake, const_bake_val = _detect_constant_bake(
                     bake_img, ch_name, is_color=is_color
                 )
@@ -1446,6 +1473,40 @@ def _bake_material_channels(
                         cls.channels[ch_name] = {"value": const_bake_val}
                     continue
 
+                manifest_midlevel = manifest_scale = None
+                if ch_name == "displacement":
+                    pixels = list(bake_img.pixels)
+                    valid = [
+                        float(pixels[i])
+                        for i in range(0, len(pixels), 4)
+                        if len(pixels) > i + 3 and float(pixels[i + 3]) >= 0.99
+                    ]
+                    if not valid:
+                        valid = [float(pixels[i]) for i in range(0, len(pixels), 4)]
+                    if not valid:
+                        raise RuntimeError("displacement bake produced no pixels")
+                    raw_min, raw_max = min(valid), max(valid)
+                    raw_mean = sum(valid) / len(valid)
+                    log_info(
+                        f"bake: displacement float stats for {mat.name!r}: "
+                        f"min={raw_min:.9g}, max={raw_max:.9g}, mean={raw_mean:.9g}"
+                    )
+                    span = raw_max - raw_min
+                    if span <= 1e-12:
+                        raise RuntimeError("displacement bake is constant but was not detected")
+                    for pixel_index in range(0, len(pixels), 4):
+                        value = (float(pixels[pixel_index]) - raw_min) / span
+                        pixels[pixel_index] = value
+                        pixels[pixel_index + 1] = value
+                        pixels[pixel_index + 2] = value
+                    bake_img.pixels = pixels
+                    manifest_midlevel = (float(raw_midlevel) - raw_min) / span
+                    manifest_scale = span * float(raw_scale)
+                    log_info(
+                        f"bake: displacement normalized stats for {mat.name!r}: "
+                        f"min=0, max=1, mean={(raw_mean - raw_min) / span:.9g}"
+                    )
+
                 _save_baked_image(bake_img, out_png, is_non_color=is_non_color, scene=scene)
 
                 if os.path.isfile(out_png) and os.path.getsize(out_png) > 0:
@@ -1459,11 +1520,21 @@ def _bake_material_channels(
                         }
                     elif ch_name == "displacement":
                         meta = cls.bake_metadata.get("displacement") or {"midlevel": 0.5, "scale": 0.05}
+                        # C4D computes scale * (texel - midlevel). For normalized texels,
+                        # this preserves (raw_height - raw_midlevel) * raw_scale.
                         cls.channels["displacement"] = {
                             "texture": rel_png,
                             "colorspace": "raw",
-                            "midlevel": float(meta.get("midlevel", 0.5)),
-                            "scale": float(meta.get("scale", 0.05)),
+                            "midlevel": float(
+                                manifest_midlevel
+                                if manifest_midlevel is not None
+                                else meta.get("midlevel", 0.5)
+                            ),
+                            "scale": float(
+                                manifest_scale
+                                if manifest_scale is not None
+                                else meta.get("scale", 0.05)
+                            ),
                         }
                     elif ch_name == "emission":
                         meta = cls.bake_metadata.get("emission") or {"strength": 1.0}
