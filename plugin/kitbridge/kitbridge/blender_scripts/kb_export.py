@@ -737,6 +737,38 @@ def _find_matching_socket(sockets: Any, ref_sock: Any, ref_collection: Any) -> O
     return None
 
 
+def _copy_color_ramp(src: Any, dst: Any) -> None:
+    """ColorRamp data is a nested struct: plain property copying leaves the default black→white."""
+    for attr in ("interpolation", "color_mode", "hue_interpolation"):
+        with contextlib.suppress(Exception):
+            setattr(dst, attr, getattr(src, attr))
+    while len(dst.elements) < len(src.elements):
+        dst.elements.new(1.0)
+    while len(dst.elements) > len(src.elements):
+        dst.elements.remove(dst.elements[-1])
+    for d, s in zip(dst.elements, src.elements):
+        d.position = s.position
+        d.color = tuple(s.color)
+
+
+def _copy_curve_mapping(src: Any, dst: Any) -> None:
+    """RGB/Float/Vector Curves: copy every curve's points (also nested, also lost otherwise)."""
+    for attr in ("clip_min_x", "clip_min_y", "clip_max_x", "clip_max_y", "use_clip", "extend"):
+        with contextlib.suppress(Exception):
+            setattr(dst, attr, getattr(src, attr))
+    for sc, dc in zip(src.curves, dst.curves):
+        while len(dc.points) < len(sc.points):
+            dc.points.new(0.5, 0.5)
+        while len(dc.points) > len(sc.points):
+            dc.points.remove(dc.points[-1])
+        for dp, sp in zip(dc.points, sc.points):
+            dp.location = tuple(sp.location)
+            with contextlib.suppress(Exception):
+                dp.handle_type = sp.handle_type
+    with contextlib.suppress(Exception):
+        dst.update()
+
+
 def _manual_inline(parent_tree: Any, group_node: Any) -> bool:
     """Inline a ``ShaderNodeGroup`` into *parent_tree* in pure Python.
 
@@ -760,6 +792,10 @@ def _manual_inline(parent_tree: Any, group_node: Any) -> bool:
                     continue
                 with contextlib.suppress(Exception):
                     setattr(new_node, prop.identifier, getattr(n, prop.identifier))
+            if getattr(n, "color_ramp", None) is not None:
+                _copy_color_ramp(n.color_ramp, new_node.color_ramp)
+            if getattr(n, "mapping", None) is not None and hasattr(n.mapping, "curves"):
+                _copy_curve_mapping(n.mapping, new_node.mapping)
             # Copy unconnected socket defaults
             for idx, inp in enumerate(n.inputs):
                 if idx < len(new_node.inputs) and not inp.is_linked:
@@ -1389,10 +1425,21 @@ def _bake_material_channels(
     bake_resolution: int,
     progress_base: float,
     progress_span: float,
+    pristine: Optional[Any] = None,
 ) -> List[str]:
-    """Bake all channels in ``cls.sockets_to_bake`` for *mat* using Cycles."""
+    """Bake all channels in ``cls.sockets_to_bake`` for *mat* using Cycles.
+
+    *pristine* is an un-flattened copy of *mat*. It is baked instead whenever its surface shader
+    sits at the top level, so groups are evaluated by Cycles itself rather than by our inliner.
+    """
     if not cls.sockets_to_bake or not mat.use_nodes or mat.node_tree is None:
         return []
+    bake_mat = mat
+    if pristine is not None:
+        p_out = _find_active_material_output(pristine.node_tree)
+        p_surf = p_out.inputs.get("Surface") if p_out is not None else None
+        if p_surf is not None and p_surf.is_linked and p_surf.links[0].from_node.bl_idname != "ShaderNodeGroup":
+            bake_mat = pristine
 
     scene = bpy.context.scene
     view_layer = bpy.context.view_layer
@@ -1412,7 +1459,7 @@ def _bake_material_channels(
     # never interfere with Cycles baking and rep_obj's original slots stay untouched.
     bake_mesh = rep_obj.data.copy()
     bake_mesh.materials.clear()
-    bake_mesh.materials.append(mat)
+    bake_mesh.materials.append(bake_mat)
     for poly in bake_mesh.polygons:
         poly.material_index = 0
     if uv_name in bake_mesh.uv_layers:
@@ -1428,7 +1475,7 @@ def _bake_material_channels(
     rep_obj.hide_render = True
     rep_obj.hide_viewport = True
 
-    nt = mat.node_tree
+    nt = bake_mat.node_tree
     output_node = _find_active_material_output(nt)
     if output_node is None:
         return []
@@ -1948,6 +1995,16 @@ def run_export(params: Dict[str, Any]) -> str:
     objects_manifest, materials_list = _collect_scene_objects_and_materials(scene)
     lights_manifest = _collect_scene_lights(scene)
 
+    # Untouched copies for baking: the pure-Python inliner (the ungroup operator needs a node editor,
+    # unavailable in background mode) can't reproduce every node exactly, which skewed bakes of
+    # procedural groups (Wood Fluted Panel: height 0..0.06 instead of 0..1).
+    pristine: Dict[str, Any] = {}
+    for mat in materials_list:
+        if mat.use_nodes and mat.node_tree is not None and any(
+            n.bl_idname == "ShaderNodeGroup" for n in mat.node_tree.nodes
+        ):
+            pristine[mat.name] = mat.copy()
+
     emit_progress(0.32, "Flattening shader node groups")
     for mat in materials_list:
         if mat.use_nodes and mat.node_tree is not None:
@@ -2014,6 +2071,7 @@ def run_export(params: Dict[str, Any]) -> str:
                 bake_resolution=bake_resolution,
                 progress_base=p_base,
                 progress_span=p_span,
+                pristine=pristine.get(mat.name),
             )
             translucency = _translucency_weight(mat)
             if translucency > 0.01:
