@@ -11,10 +11,14 @@ import pytest
 
 from kitbridge.core import blender, paths, pipeline
 from kitbridge.core.shader_graph import (
+    blender_matrix_to_fbx,
+    build_light_manifest_entry,
     GraphNode,
     classify_material_output,
     classify_principled_bsdf,
     classify_socket,
+    udim_texture_template,
+    udim_tile_filename,
 )
 
 
@@ -822,6 +826,40 @@ def test_a_failed_fetch_keeps_its_files(chosen_folder, monkeypatch):
 def test_both_sides_agree_on_the_exporter_version():
     script = Path(pipeline.__file__).parent.parent / "blender_scripts" / "kb_export.py"
     assert f"EXPORTER_VERSION = {pipeline.EXPORTER_VERSION}" in script.read_text(encoding="utf-8")
+
+
+def test_udim_filename_helpers_preserve_literal_manifest_token() -> None:
+    template = udim_texture_template("body_basecolor.<UDIM>.webp")
+    assert template == "body_basecolor.<UDIM>.webp"
+    assert udim_tile_filename(template, 1001) == "body_basecolor.1001.webp"
+    assert udim_texture_template("body_basecolor.1001.png") == "body_basecolor.<UDIM>.png"
+
+
+def test_light_manifest_helper_uses_plain_values() -> None:
+    entry = build_light_manifest_entry(
+        name="Key",
+        light_type="AREA",
+        color=(0.2, 0.3, 0.4),
+        power=250.0,
+        radius=0.1,
+        matrix=((1, 0, 0, 2), (0, 1, 0, 3), (0, 0, 1, 4), (0, 0, 0, 1)),
+        parent="Rig",
+        shape="DISK",
+        size=1.5,
+        size_y=2.0,
+    )
+    assert entry["type"] == "area"
+    assert entry["colour"] == [0.2, 0.3, 0.4]
+    assert entry["matrix"][0][3] == 2.0
+    assert entry["shape"] == "disk"
+    assert entry["parent"] == "Rig"
+
+
+def test_blender_to_fbx_matrix_swaps_up_axis() -> None:
+    matrix = blender_matrix_to_fbx(
+        ((1, 0, 0, 2), (0, 1, 0, 3), (0, 0, 1, 4), (0, 0, 0, 1))
+    )
+    assert [matrix[0][3], matrix[1][3], matrix[2][3]] == [2.0, 4.0, -3.0]
 
 
 def _old_package(folder: Path, base_id: str = "cccccccc-0000-0000-0000-000000000000") -> Path:

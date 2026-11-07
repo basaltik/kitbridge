@@ -13,3 +13,14 @@ Details: `~\blenderkit_data\kitbridge_bench\report.html`. How to re-run: `dev/be
 | 6 | Glass silhouettes differ (benchmark artefact) | Glass doors/handrails/pots: IoU 0.05–0.74 | Cycles gives refractive glass alpha 1 (refracted world), Redshift alpha 0 | Bench: enable Cycles *Transparent Glass* (`film_transparent_glass`) so both treat glass the same; then re-judge glass colour |
 
 Order: 1 (likely a plain bug), 2, 4, 3, 5; 6 before judging any glass change.
+
+## Status after the first fixes (2026-11-07)
+
+| # | Status |
+|---|--------|
+| 1 | **Fixed.** Textures were WebP, which Redshift can't read; exporter converts WebP/AVIF to PNG. Walnut ΔE 36.9 → 0.5, SSIM 0.999. |
+| 2 | **Partly fixed.** Three bugs: RS tag displacement was never switched on (2027 uses a Mode cycle); the height map was baked through an 8-bit colour-managed save; Blender 5.2 removed `ImagePackedFile.data`, breaking the bake. Displacement now renders (IoU 0.699 → 0.844) but Redshift displaces ~1.5× more than Cycles (silhouette +82 px vs +54 px on a 272 px sphere) and there is a spike at the UV pole. Next: compare RS displacement-node maths (map encoding, space, new range) with Blender's `(h − mid) × scale`, object space. |
+| 3 | **Re-diagnosed.** The lamp has no Blender light: the glow is an emissive bulb mesh ("lumière", strength 20, now in the manifest) inside a translucent shade ("plastique translucide", Translucent BSDF in a Mix Shader). The shade imports opaque, so the light stays inside. Next: map Translucent/thin translucency (RS `refr_thin_walled` / translucency) instead of baking it away. Light export to the manifest is implemented for assets that do contain lights. |
+| 4 | **Exporter done, real package not yet.** UDIM tiles export with a `<UDIM>` path token (checked on a copy: 4 tiles × 5 maps). Reconverting the real 184 MB Urban Loft package fell back to the old export — find out why (timeout?), then add `<UDIM>` support to the RS/Arnold importers. |
+| 5 | Not started. |
+| 6 | Not started. |

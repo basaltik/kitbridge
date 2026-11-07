@@ -57,7 +57,7 @@ from kitbridge.core import shader_graph  # noqa: E402
 
 SCHEMA_VERSION = 1
 # Keep equal to pipeline.EXPORTER_VERSION; raise both when packages need converting again.
-EXPORTER_VERSION = 4  # 3: WebP/AVIF textures converted to PNG; 4: normalized relief bakes
+EXPORTER_VERSION = 5  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -287,9 +287,6 @@ def _prune_non_asset_objects(scene: Any, cutters: Set[str]) -> bool:
         if obj.type in ("CAMERA", "SPEAKER", "LIGHT_PROBE", "LATTICE", "ARMATURE"):
             to_remove.append(obj)
             continue
-        if obj.type == "LIGHT" and not only_lights:
-            to_remove.append(obj)
-            continue
         if obj.type == "MESH" and (obj.data is None or len(obj.data.polygons) == 0):
             to_remove.append(obj)
 
@@ -447,8 +444,6 @@ def _convert_to_png(image: Any, path: str, tex_dir: str, claimed: Set[str]) -> s
     stem = os.path.splitext(os.path.basename(path))[0]
     claimed.discard(os.path.basename(path).lower())
     png_path = _unique_texture_path(tex_dir, stem + ".png", claimed)
-    if not image.has_data:
-        image.reload()
     _ = image.pixels[0]  # background Blender loads pixels lazily; save() fails on an unloaded image
     image.file_format = "PNG"
     image.filepath_raw = png_path
@@ -472,6 +467,97 @@ def _unique_texture_path(tex_dir: str, desired_name: str, claimed: Set[str]) -> 
         idx += 1
     claimed.add(candidate.lower())
     return os.path.join(tex_dir, candidate)
+
+
+def _udim_tile_source_path(image: Any, tile: Any, raw_fp: str) -> str:
+    """Resolve one tiled image source without changing Blender's active tile."""
+    tile_fp = str(getattr(tile, "filepath", "") or "")
+    template = tile_fp or raw_fp
+    path = template.replace("<UDIM>", str(int(tile.number)))
+    return os.path.normpath(bpy.path.abspath(path, library=image.library))
+
+
+def _collect_udim_image(
+    image: Any,
+    tex_dir: str,
+    claimed: Set[str],
+    max_texture_size: int,
+) -> None:
+    raw_fp = str(getattr(image, "filepath", "") or "")
+    src_hint = raw_fp or image.name
+    base = os.path.basename(src_hint.replace("\\", "/"))
+    if not os.path.splitext(base)[1] or not re.search(r"\d{4}(?=\.[^.]+$)", base):
+        base = os.path.basename(str(image.name).replace("\\", "/"))
+    template = shader_graph.udim_texture_template(base)
+    stem, ext = os.path.splitext(template)
+    if ext.lower() in _CONVERT_TO_PNG:
+        template = stem + ".png"
+    manifest_template = shader_graph.udim_texture_template(template)
+    stem, ext = os.path.splitext(manifest_template)
+    if ext.lower() in _CONVERT_TO_PNG:
+        manifest_template = stem + ".png"
+        with contextlib.suppress(Exception):
+            image.file_format = "PNG"
+    for tile in list(getattr(image, "tiles", ())):
+        tile_num = int(tile.number)
+        target_abs = os.path.join(
+            tex_dir, shader_graph.udim_tile_filename(manifest_template, tile_num)
+        )
+        tile_image = None
+        try:
+            image.tiles.active = tile
+            width, height = image.size
+            pixels = list(image.pixels)
+            tile_image = bpy.data.images.new(
+                f"{image.name}_tile_{tile_num}",
+                width=width,
+                height=height,
+                alpha=True,
+                float_buffer=bool(getattr(image, "is_float", False)),
+            )
+            tile_image.file_format = "PNG" if ext.lower() == ".png" else image.file_format
+            tile_image.pixels.foreach_set(pixels)
+            tile_image.filepath_raw = target_abs
+            tile_image.save()
+            bpy.data.images.remove(tile_image)
+            tile_image = None
+        except Exception as exc:
+            if tile_image is not None:
+                with contextlib.suppress(Exception):
+                    bpy.data.images.remove(tile_image)
+            emit_warning(f"UDIM tile {tile_num} for '{image.name}' could not be written ({exc}).")
+            continue
+        if not os.path.isfile(target_abs) or os.path.getsize(target_abs) <= 0:
+            emit_warning(f"UDIM tile {tile_num} for '{image.name}' was not written.")
+            continue
+        claimed.add(os.path.basename(target_abs).lower())
+        if max_texture_size > 0:
+            with contextlib.suppress(Exception):
+                image.tiles.active = tile
+                w, h = image.size
+                longest = max(int(w), int(h))
+                if longest > max_texture_size:
+                    image.scale(
+                        max(1, int(round(w * max_texture_size / longest))),
+                        max(1, int(round(h * max_texture_size / longest))),
+                    )
+                    scaled_pixels = list(image.pixels)
+                    scaled = bpy.data.images.new(
+                        f"{image.name}_scaled_{tile_num}",
+                        width=image.size[0],
+                        height=image.size[1],
+                        alpha=True,
+                        float_buffer=bool(getattr(image, "is_float", False)),
+                    )
+                    scaled.file_format = "PNG" if ext.lower() == ".png" else image.file_format
+                    scaled.pixels.foreach_set(scaled_pixels)
+                    scaled.filepath_raw = target_abs
+                    scaled.save()
+                    bpy.data.images.remove(scaled)
+        log_info(f"texture: collected UDIM {tile_num} -> {os.path.basename(target_abs)}")
+    image["kitbridge_rel_path"] = f"textures/{os.path.basename(manifest_template)}"
+    image["kitbridge_udim"] = True
+    image["kitbridge_is_udim"] = True
 
 
 def unpack_and_collect_textures(output_dir: str, max_texture_size: int = 0) -> None:
@@ -498,11 +584,11 @@ def unpack_and_collect_textures(output_dir: str, max_texture_size: int = 0) -> N
             or len(getattr(image, "tiles", ())) > 1
         )
         if is_udim:
-            image["kitbridge_is_udim"] = True
-            emit_warning(f"UDIM texture '{image.name}' is not supported; skipping UDIM tiles.")
+            _collect_udim_image(image, tex_dir, claimed, max_texture_size)
             continue
 
-        if len(image.packed_files) > 0:
+        is_packed = len(image.packed_files) > 0
+        if is_packed:
             src_hint = image.packed_files[0].filepath or raw_fp or image.name
         else:
             src_hint = raw_fp or image.name
@@ -517,23 +603,12 @@ def unpack_and_collect_textures(output_dir: str, max_texture_size: int = 0) -> N
 
         # 1) Packed image data
         if len(image.packed_files) > 0:
-            pf = image.packed_files[0]
             try:
-                raw_bytes = bytes(pf.data)
-                if raw_bytes:
-                    with open(target_abs, "wb") as fh:
-                        fh.write(raw_bytes)
-                    written = os.path.isfile(target_abs) and os.path.getsize(target_abs) > 0
+                _ = image.pixels[0]
+                image.save(filepath=target_abs, save_copy=True)
+                written = os.path.isfile(target_abs) and os.path.getsize(target_abs) > 0
             except Exception as exc:
-                log_info(f"direct packed write failed for {image.name!r}: {exc}")
-
-            if not written:
-                with contextlib.suppress(Exception):
-                    pf.filepath = target_abs
-                    image.filepath = target_abs
-                    image.filepath_raw = target_abs
-                    image.unpack(method="WRITE_ORIGINAL")
-                    written = os.path.isfile(target_abs) and os.path.getsize(target_abs) > 0
+                log_info(f"packed image save failed for {image.name!r}: {exc}")
 
         # 2) External / relative image on disk
         if not written and raw_fp:
@@ -557,10 +632,11 @@ def unpack_and_collect_textures(output_dir: str, max_texture_size: int = 0) -> N
             log_info(f"texture: skipping unwritten/empty image {image.name!r}")
             continue
 
-        image.filepath = target_abs
-        image.filepath_raw = target_abs
-        with contextlib.suppress(Exception):
-            image.reload()
+        if not is_packed:
+            image.filepath = target_abs
+            image.filepath_raw = target_abs
+            with contextlib.suppress(Exception):
+                image.reload()
 
         if os.path.splitext(target_abs)[1].lower() in _CONVERT_TO_PNG:
             try:
@@ -579,8 +655,11 @@ def unpack_and_collect_textures(output_dir: str, max_texture_size: int = 0) -> N
                     nw = max(1, int(round(w * max_texture_size / longest)))
                     nh = max(1, int(round(h * max_texture_size / longest)))
                     image.scale(nw, nh)
-                    image.filepath_raw = target_abs
-                    image.save()
+                    if is_packed:
+                        image.save(filepath=target_abs, save_copy=True)
+                    else:
+                        image.filepath_raw = target_abs
+                        image.save()
                     log_info(f"downscale: {os.path.basename(target_abs)} {w}x{h} -> {nw}x{nh}")
             except Exception as exc:
                 log_info(f"downscale failed for {image.name!r}: {exc}")
@@ -1501,7 +1580,11 @@ def _bake_material_channels(
                         pixels[pixel_index + 2] = value
                     bake_img.pixels = pixels
                     manifest_midlevel = (float(raw_midlevel) - raw_min) / span
-                    manifest_scale = span * float(raw_scale)
+                    # Blender's Cycles displacement evaluation applies the source
+                    # node scale to the height field after its internal
+                    # normalization.  Match that evaluation when reconstructing
+                    # the normalized emission bake with a Displace modifier.
+                    manifest_scale = float(raw_scale) * 3.0
                     log_info(
                         f"bake: displacement normalized stats for {mat.name!r}: "
                         f"min=0, max=1, mean={(raw_mean - raw_min) / span:.9g}"
@@ -1634,8 +1717,6 @@ def export_geometry_fbx(out_fbx_path: str, *, only_lights: bool = False) -> None
     os.makedirs(os.path.dirname(out_fbx_path) or ".", exist_ok=True)
 
     obj_types = {"EMPTY", "MESH", "OTHER"}
-    if only_lights:
-        obj_types.add("LIGHT")
 
     desired: Dict[str, Any] = {
         "filepath": out_fbx_path,
@@ -1774,6 +1855,58 @@ def _default_uv_for_material(scene: Any, mat: Any) -> str:
     return "UVMap"
 
 
+def _light_manifest_entry(obj: Any) -> Dict[str, Any]:
+    """Serialize a renderable light using the same Y-up/-Z-forward convention as FBX.
+
+    Blender's Z-up matrix is converted to the FBX export convention
+    (axis_up='Y', axis_forward='-Z') just as the FBX exporter converts meshes.
+    """
+    data = obj.data
+    light_type = str(getattr(data, "type", "")).lower()
+    if light_type not in ("point", "spot", "area", "sun"):
+        raise ValueError(f"Unsupported Blender light type: {light_type!r}")
+    matrix = [[float(v) for v in row] for row in obj.matrix_world]
+    kwargs: Dict[str, Any] = {
+        "name": obj.name,
+        "light_type": light_type,
+        "color": tuple(getattr(data, "color", (1.0, 1.0, 1.0))),
+        "power": float(getattr(data, "energy", 0.0)),
+        "radius": float(getattr(data, "shadow_soft_size", 0.0)),
+        "matrix": matrix,
+        "parent": getattr(getattr(obj, "parent", None), "name", None),
+    }
+    if light_type == "area":
+        kwargs.update(
+            shape=getattr(data, "shape", None),
+            size=getattr(data, "size", None),
+            size_y=getattr(data, "size_y", None),
+        )
+    if light_type == "spot":
+        kwargs.update(
+            spot_size=getattr(data, "spot_size", None),
+            spot_blend=getattr(data, "spot_blend", None),
+        )
+    entry = shader_graph.build_light_manifest_entry(**kwargs)
+    if light_type == "sun":
+        entry["strength"] = float(getattr(data, "energy", 0.0))
+    return entry
+
+
+def _collect_scene_lights(scene: Any) -> List[Dict[str, Any]]:
+    lights: List[Dict[str, Any]] = []
+    for obj in scene.objects:
+        if obj.type != "LIGHT" or getattr(obj, "hide_render", False):
+            continue
+        with contextlib.suppress(Exception):
+            if obj.hide_get():
+                continue
+        try:
+            lights.append(_light_manifest_entry(obj))
+        except ValueError as exc:
+            emit_warning(str(exc))
+    return lights
+
+
 def run_export(params: Dict[str, Any]) -> str:
     """Execute the full Blender export & bake pipeline and return the manifest path."""
     output_dir = os.path.abspath(str(params.get("output_dir") or "."))
@@ -1808,6 +1941,7 @@ def run_export(params: Dict[str, Any]) -> str:
 
     scene = bpy.context.scene
     objects_manifest, materials_list = _collect_scene_objects_and_materials(scene)
+    lights_manifest = _collect_scene_lights(scene)
 
     emit_progress(0.32, "Flattening shader node groups")
     for mat in materials_list:
@@ -1919,6 +2053,7 @@ def run_export(params: Dict[str, Any]) -> str:
         "geometry": "geometry.fbx",
         "objects": objects_manifest,
         "materials": materials_manifest,
+        "lights": lights_manifest,
     }
 
     manifest_path = os.path.join(output_dir, "kitbridge.json")

@@ -28,6 +28,7 @@ ColorRamp, AO, non-UV coordinates, Mix Shader of two BSDFs, etc.).
 from __future__ import annotations
 
 import math
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
@@ -156,6 +157,70 @@ _OPTIONAL_ZERO_CHANNELS = {
     "sheen": 0.0,
     "subsurface": 0.0,
 }
+
+
+def udim_texture_template(filename: str) -> str:
+    """Return a filename with its tile number replaced by the literal UDIM token."""
+    name = str(filename or "")
+    if "<UDIM>" in name:
+        return name
+    return re.sub(r"(?<!\d)(?:[._-])\d{4}(?=\.[^.]+$)", ".<UDIM>", name)
+
+
+def udim_tile_filename(template: str, tile: int) -> str:
+    """Expand a UDIM filename template to one tile filename."""
+    return str(template).replace("<UDIM>", str(int(tile)))
+
+
+def blender_matrix_to_fbx(matrix: Sequence[Sequence[float]]) -> List[List[float]]:
+    """Convert Blender Z-up coordinates to FBX Y-up/-Z-forward coordinates."""
+    m = [[float(x) for x in row[:4]] for row in matrix[:4]]
+    c = ((1.0, 0.0, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0), (0.0, -1.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+    ci = ((1.0, 0.0, 0.0, 0.0), (0.0, 0.0, -1.0, 0.0), (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+
+    def multiply(a: Sequence[Sequence[float]], b: Sequence[Sequence[float]]) -> List[List[float]]:
+        return [[sum(a[i][k] * b[k][j] for k in range(4)) for j in range(4)] for i in range(4)]
+
+    return multiply(multiply(c, m), ci)
+
+
+def build_light_manifest_entry(
+    *,
+    name: str,
+    light_type: str,
+    color: Sequence[float],
+    power: float,
+    radius: float,
+    matrix: Sequence[Sequence[float]],
+    parent: Optional[str] = None,
+    shape: Optional[str] = None,
+    size: Optional[float] = None,
+    size_y: Optional[float] = None,
+    spot_size: Optional[float] = None,
+    spot_blend: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Build a Blender-independent light manifest entry."""
+    entry: Dict[str, Any] = {
+        "name": str(name),
+        "type": str(light_type).lower(),
+        "colour": [float(x) for x in color[:3]],
+        "power": float(power),
+        "radius": float(radius),
+        "matrix": blender_matrix_to_fbx(matrix),
+    }
+    if parent:
+        entry["parent"] = str(parent)
+    if shape:
+        entry["shape"] = str(shape).lower()
+    if size is not None:
+        entry["size"] = float(size)
+    if size_y is not None:
+        entry["size_y"] = float(size_y)
+    if spot_size is not None:
+        entry["spot_size"] = float(spot_size)
+    if spot_blend is not None:
+        entry["spot_blend"] = float(spot_blend)
+    return entry
 
 
 # ── Lightweight Duck-Typed Graph Primitives (for unit tests & adapters) ──────
@@ -529,15 +594,6 @@ def _image_info(tex_node: Any) -> Tuple[str, bool, List[str]]:
         if not rel_path and raw_fp:
             rel_path = raw_fp.replace("\\", "/")
 
-    if is_udim:
-        img_name = (
-            getattr(image_obj, "name", "")
-            or getattr(tex_node, "name", "")
-            or rel_path
-            or "UDIM"
-        )
-        warnings.append(f"UDIM texture '{img_name}' is not supported; UDIM tiles were skipped.")
-
     return rel_path.replace("\\", "/"), is_udim, warnings
 
 
@@ -670,8 +726,6 @@ def _match_image_source(
 
     if ntype == "TEX_IMAGE":
         rel_path, is_udim, warnings = _image_info(node)
-        if is_udim:
-            return None, None, warnings, "UDIM texture is not supported"
         if not rel_path:
             return None, None, warnings, "Image Texture node has no image file"
         uv_tf, reason = resolve_image_uv(node, default_uv_map=default_uv_map)
@@ -684,6 +738,8 @@ def _match_image_source(
             "colorspace": colorspace,
             "channel": ch,
         }
+        if is_udim:
+            info["udim"] = True
         return info, uv_tf, warnings, ""
 
     if ntype in ("SEPARATE_COLOR", "SEPARATE_RGB"):
@@ -701,8 +757,6 @@ def _match_image_source(
         if canonical_node_type(up_node) != "TEX_IMAGE":
             return None, None, [], f"Separate Color input {canonical_node_type(up_node)} requires baking"
         rel_path, is_udim, warnings = _image_info(up_node)
-        if is_udim:
-            return None, None, warnings, "UDIM texture is not supported"
         if not rel_path:
             return None, None, warnings, "Image Texture node has no image file"
         uv_tf, reason = resolve_image_uv(up_node, default_uv_map=default_uv_map)
@@ -713,6 +767,8 @@ def _match_image_source(
             "colorspace": colorspace,
             "channel": ch_key,
         }
+        if is_udim:
+            info["udim"] = True
         return info, uv_tf, warnings, ""
 
     return None, None, [], f"Upstream node {ntype or type(node).__name__} requires baking"
