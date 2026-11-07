@@ -1,5 +1,5 @@
 """Executed inside Blender; renders a source Blendkit file as the reference image."""
-import json, math, os, sys
+import contextlib, json, math, os, sys
 import bpy
 from mathutils import Vector
 
@@ -13,6 +13,23 @@ def _params():
 
 def _meshes():
     return [o for o in bpy.context.scene.objects if o.type == "MESH" and not o.hide_render]
+
+def _has_displacement(mat):
+    if mat is None or not mat.use_nodes:
+        return False
+    return any(n.bl_idname == "ShaderNodeOutputMaterial" and n.inputs["Displacement"].is_linked
+               for n in mat.node_tree.nodes)
+
+
+def _subdivide_displaced(objs):
+    """Cycles displaces only existing vertices; Redshift tessellates. Give displaced meshes enough
+    vertices (like Redshift's tessellation) so the reference doesn't miss relief between vertices."""
+    for o in objs:
+        if any(_has_displacement(s.material) for s in o.material_slots):
+            mod = o.modifiers.new("Kitbridge bench subdivision", "SUBSURF")
+            mod.subdivision_type = "SIMPLE"   # add vertices without shrinking the shape
+            mod.levels = mod.render_levels = 4
+
 
 def _setup_world(hdr_path):
     """HDRI lights the scene; film_transparent hides it from the camera (C4D does the same)."""
@@ -47,6 +64,12 @@ def render(params):
                 elif len(originals) == 1:
                     slot.material = next(iter(originals.values()))
     if not objs: raise RuntimeError("source blend and package geometry contain no mesh objects")
+    if params.get("no_displacement"):   # calibration: the undisplaced silhouette
+        for m in bpy.data.materials:
+            with contextlib.suppress(Exception):
+                m.displacement_method = "BUMP"
+    else:
+        _subdivide_displaced(objs)
     corners = [o.matrix_world @ Vector(c) for o in objs for c in o.bound_box]
     lo = Vector((min(p.x for p in corners), min(p.y for p in corners), min(p.z for p in corners)))
     hi = Vector((max(p.x for p in corners), max(p.y for p in corners), max(p.z for p in corners)))
