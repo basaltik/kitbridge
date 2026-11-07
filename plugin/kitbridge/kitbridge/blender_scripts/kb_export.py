@@ -1338,12 +1338,18 @@ def _wire_channel_to_emission(
     if channel_name == "displacement":
         disp_in = output_node.inputs.get("Displacement")
         if disp_in and disp_in.is_linked:
-            dnode = disp_in.links[0].from_node
-            h_in = dnode.inputs.get("Height") if dnode.bl_idname == "ShaderNodeDisplacement" else disp_in
+            # Bake the final displacement along the normal, in metres: dot(displacement vector,
+            # normal). It already includes Height, Midlevel, Scale and anything upstream, so the
+            # manifest needs no reconstruction of Blender's node maths. The bake object has an
+            # identity transform, so object and world space agree.
+            dot = node_tree.nodes.new("ShaderNodeVectorMath")
+            dot.operation = "DOT_PRODUCT"
+            geo = node_tree.nodes.new("ShaderNodeNewGeometry")
             em = node_tree.nodes.new("ShaderNodeEmission")
-            temp_nodes.append(em)
-            if h_in is not None and h_in.is_linked:
-                node_tree.links.new(h_in.links[0].from_socket, em.inputs["Color"])
+            temp_nodes.extend((dot, geo, em))
+            node_tree.links.new(disp_in.links[0].from_socket, dot.inputs[0])
+            node_tree.links.new(geo.outputs["Normal"], dot.inputs[1])
+            node_tree.links.new(dot.outputs["Value"], em.inputs["Color"])
             node_tree.links.new(em.outputs["Emission"], surf_in)
             return temp_nodes, orig_from_socket
 
@@ -1579,12 +1585,11 @@ def _bake_material_channels(
                         pixels[pixel_index + 1] = value
                         pixels[pixel_index + 2] = value
                     bake_img.pixels = pixels
-                    manifest_midlevel = (float(raw_midlevel) - raw_min) / span
-                    # Blender's Cycles displacement evaluation applies the source
-                    # node scale to the height field after its internal
-                    # normalization.  Match that evaluation when reconstructing
-                    # the normalized emission bake with a Displace modifier.
-                    manifest_scale = float(raw_scale) * 3.0
+                    # Texels are the baked displacement in metres, normalised: d = min + t * span.
+                    # The importer computes scale * (t - midlevel), so scale = span and
+                    # midlevel = -min / span reproduce d exactly.
+                    manifest_scale = span
+                    manifest_midlevel = -raw_min / span
                     log_info(
                         f"bake: displacement normalized stats for {mat.name!r}: "
                         f"min=0, max=1, mean={(raw_mean - raw_min) / span:.9g}"
