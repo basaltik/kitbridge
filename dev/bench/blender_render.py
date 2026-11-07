@@ -65,6 +65,9 @@ def render(params):
     scene.render.resolution_x = scene.render.resolution_y = 512; scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = "PNG"; scene.render.image_settings.color_mode = "RGBA"
     scene.render.film_transparent = True
+    # Glass whose refraction reaches the (hidden) world counts as transparent, as Redshift does;
+    # otherwise Cycles gives glass alpha 1 and every glass silhouette differs.
+    scene.cycles.film_transparent_glass = True
     scene.view_settings.view_transform = "Standard"; scene.view_settings.look = "None"; scene.view_settings.exposure = 0; scene.view_settings.gamma = 1
     scene.render.filepath = params["out"]
     bpy.ops.render.render(write_still=True)

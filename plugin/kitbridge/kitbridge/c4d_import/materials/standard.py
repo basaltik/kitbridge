@@ -29,6 +29,8 @@ from __future__ import annotations
 import logging
 from typing import Any, List, Optional
 
+from kitbridge.core.pipeline import UDIM_TOKEN, udim_tiles
+
 from ..compat import c4d
 from .base import MaterialPlan
 from .redshift import BuiltMaterialResult
@@ -39,6 +41,13 @@ log = logging.getLogger("kitbridge")
 def _create_bitmap_shader(mat: Any, path: str) -> Any:
     if c4d is None or not path:
         return None
+    if UDIM_TOKEN in path:
+        # The legacy Bitmap shader can't tile; use the first tile so the model is not left blank.
+        tiles = udim_tiles(path)
+        if not tiles:
+            return None
+        log.warning("Standard materials have no UDIM support; using tile %s only", tiles[0])
+        path = tiles[0]
     try:
         shd = c4d.BaseShader(c4d.Xbitmap)
         if shd is None:

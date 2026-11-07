@@ -312,6 +312,26 @@ def _resolve_pkg_file(package_dir: str, rel_path: str) -> str:
     return os.path.join(package_dir, *norm_rel.split("/"))
 
 
+UDIM_TOKEN = "<UDIM>"
+
+
+def udim_tiles(path_with_token: str) -> List[str]:
+    """Existing tile files for a path like ``.../body.<UDIM>.png`` (tiles 1001..1999), sorted."""
+    folder, name = os.path.split(path_with_token)
+    head, _, tail = name.partition(UDIM_TOKEN)
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    tiles = []
+    for candidate in names:
+        middle = candidate[len(head):len(candidate) - len(tail)] if tail else candidate[len(head):]
+        if (candidate.startswith(head) and candidate.endswith(tail) and len(middle) == 4
+                and middle.isdigit() and 1001 <= int(middle) <= 1999):
+            tiles.append(os.path.join(folder, candidate))
+    return sorted(tiles)
+
+
 def _validate_channel_entry(
     mat_name: str,
     ch_name: str,
@@ -345,6 +365,9 @@ def _validate_channel_entry(
             errors.append(f"{prefix}.texture: expected non-empty relative path string")
         elif os.path.isabs(tex):
             errors.append(f"{prefix}.texture: path must be relative, got {tex!r}")
+        elif package_dir is not None and UDIM_TOKEN in tex:
+            if not udim_tiles(_resolve_pkg_file(package_dir, tex)):
+                errors.append(f"{prefix}.texture: no UDIM tiles found on disk for {tex!r}")
         elif package_dir is not None:
             abs_tex = _resolve_pkg_file(package_dir, tex)
             if not os.path.isfile(abs_tex):

@@ -34,6 +34,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
+from kitbridge.core.pipeline import UDIM_TOKEN, udim_tiles
+
 # Custom BaseContainer IDs used to tag Kitbridge-created materials and HDR domes
 # inside a Cinema 4D document for deduplication and replacement.
 KITBRIDGE_MAT_BC_ID = 1059981
@@ -374,7 +376,12 @@ def build_material_plan(
             warnings.append(f"Material '{mat_name}': channel '{ch_name}' has empty texture path.")
             return None
         abs_tex = resolve_texture_path(package_dir, rel_tex)
-        if not os.path.isfile(abs_tex):
+        if UDIM_TOKEN in rel_tex:
+            # Tiled texture: the path keeps the token for the renderer; it only has to exist as tiles.
+            if not udim_tiles(abs_tex):
+                warnings.append(f"Material '{mat_name}': no UDIM tiles on disk for '{ch_name}': {rel_tex}")
+                return None
+        elif not os.path.isfile(abs_tex):
             warnings.append(
                 f"Material '{mat_name}': missing texture file on disk for '{ch_name}': {rel_tex}"
             )

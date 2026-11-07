@@ -162,7 +162,8 @@ def build_arnold_material(plan: MaterialPlan, material_name: Optional[str] = Non
             img_nodes_by_key[shared_spec.key] = img_node
 
             fn_port = compat.find_port(img_node, PORT_IMG_FILENAME, is_input=True)
-            if not compat.set_port_file_path(fn_port, shared_spec.path):
+            # Arnold's tile token is lower case; Redshift reads the manifest's <UDIM> as is.
+            if not compat.set_port_file_path(fn_port, shared_spec.path.replace("<UDIM>", "<udim>")):
                 warnings.append(
                     f"Material '{plan.name}': failed to set Arnold image.filename for {shared_spec.rel_path!r}."
                 )
