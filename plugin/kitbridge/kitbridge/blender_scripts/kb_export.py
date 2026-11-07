@@ -57,7 +57,7 @@ from kitbridge.core import shader_graph  # noqa: E402
 
 SCHEMA_VERSION = 1
 # Keep equal to pipeline.EXPORTER_VERSION; raise both when packages need converting again.
-EXPORTER_VERSION = 5  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests
+EXPORTER_VERSION = 6  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests; 6: pristine bakes, fine normals, SSS/translucency
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
