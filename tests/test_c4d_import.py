@@ -326,7 +326,10 @@ def test_real_cached_manifests_plan_building() -> None:
     fabric_plan = chair_by_name["mtl_fabric_beige"]
     assert fabric_plan.ops["sheen"].is_value is True
     assert fabric_plan.ops["subsurface"].is_value is True
-    assert fabric_plan.ops["base_color"].texture.uv.scale == (10.0, 10.0)
+    # base_color is baked, so its 10x tiling is already in the image; direct maps keep the Mapping.
+    assert "base_color" in fabric_plan.baked_channels
+    assert fabric_plan.ops["base_color"].texture.uv.scale == (1.0, 1.0)
+    assert fabric_plan.ops["roughness"].texture.uv.scale == (10.0, 10.0)
     assert fabric_plan.ops["normal"].texture.path.endswith(".exr")
     assert os.path.isfile(fabric_plan.ops["normal"].texture.path)
 

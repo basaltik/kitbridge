@@ -410,7 +410,11 @@ def build_material_plan(
         scale_m = _coerce_scalar(entry.get("scale"), 0.05)
         scale_cm = round(scale_m * cm_per_unit, 6)
 
-        tex_key = _make_texture_key(abs_tex, cs, uv_plan)
+        # A baked texture already contains the original Mapping (tiling, offset, rotation):
+        # applying the material's UV transform again would tile it twice (Bosch steel: 4x4 -> 16x).
+        tex_uv = UVTransformPlan(map_name=uv_plan.map_name) if ch_name in baked_channels else uv_plan
+
+        tex_key = _make_texture_key(abs_tex, cs, tex_uv)
         spec = shared_by_key.get(tex_key)
         if spec is None:
             spec = SharedTextureSpec(
@@ -418,7 +422,7 @@ def build_material_plan(
                 path=abs_tex,
                 rel_path=rel_tex.replace("\\", "/"),
                 colorspace=cs,
-                uv=uv_plan,
+                uv=tex_uv,
             )
             shared_by_key[tex_key] = spec
             shared_list.append(spec)
@@ -434,7 +438,7 @@ def build_material_plan(
             colorspace=cs,
             channel=raw_ch,
             invert=invert,
-            uv=uv_plan,
+            uv=tex_uv,
             texture_key=tex_key,
             strength=strength,
             flip_green=flip_green,

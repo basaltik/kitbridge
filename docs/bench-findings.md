@@ -38,3 +38,18 @@ Wood Fluted Panel 0.891 (object-space pattern direction), Brick Apartments 0.893
 array 0.903, lamp 0.921 (ΔE 44: shade glow, see #3).
 Bench note: SIMPLE subdivision is now capped at 400k faces per object (level 4 on a large model
 made Blender ask for 38 GB and crash). Reference for 526cec87 still fails — check.
+
+## Steel (Bosch range), 2026-11-08 — partly
+Two general bugs found and fixed while looking at it:
+- **Baked textures were tiled twice.** A baked channel already contains the original Mapping
+  (tiling/offset/rotation), but the importer applied the material's UV transform to it again
+  (Bosch steel 4×4 → 16×; the chair fabric's baked colour 10×10 → 100×). Baked channels now use an
+  identity UV transform; direct image textures keep the Mapping. This removed the patches on the
+  range body.
+- **Subtle normal/bump bakes were thrown away as "constant".** The flatness check used the colour
+  tolerance (0.008); fine relief such as brushed metal (bump strength 0.02) varies less. Normal,
+  bump and displacement now use 0.0005.
+Still open: the range body renders near-black in Redshift vs dark grey in Cycles (SSIM 0.764).
+`Dual_Fuel_Range_stil01` (AO-driven base colour, metallic 1, roughness 0.25, image bump) now
+exports its bump, but the large body panels probably use another material — identify which
+material the front/side panels use, then compare its Cycles vs Redshift response.

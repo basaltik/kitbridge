@@ -1201,6 +1201,10 @@ def _detect_constant_bake(
     tol: float = 0.008,
 ) -> Tuple[bool, Optional[Any]]:
     """Inspect baked pixel buffer and return ``(True, constant_value)`` if uniform across UV islands."""
+    if ch_name in ("normal", "bump", "displacement"):
+        # Fine relief (brushed metal: bump strength 0.02) varies by far less than a colour step
+        # yet carries the whole look; only drop a truly flat map.
+        tol = min(tol, 0.0005)
     try:
         px = list(bake_img.pixels)
     except Exception:
