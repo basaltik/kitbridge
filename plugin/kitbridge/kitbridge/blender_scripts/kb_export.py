@@ -1814,21 +1814,71 @@ def _translucency_weight(mat: Any) -> float:
         return 0.0
     output = next((n for n in tree.nodes if n.type == "OUTPUT_MATERIAL" and n.is_active_output), None)
 
-    def walk(socket: Any, weight: float, depth: int) -> float:
-        if socket is None or not socket.is_linked or depth > 8:
-            return 0.0
-        node = socket.links[0].from_node
-        if node.type == "BSDF_TRANSLUCENT":
-            return weight
-        if node.type == "ADD_SHADER":
-            return walk(node.inputs[0], weight, depth + 1) + walk(node.inputs[1], weight, depth + 1)
-        if node.type == "MIX_SHADER":
-            # A driven factor (Is Camera Ray, Fresnel...) has no single value: count it as half.
-            fac = 0.5 if node.inputs[0].is_linked else float(node.inputs[0].default_value)
-            return walk(node.inputs[1], weight * (1.0 - fac), depth + 1) + walk(node.inputs[2], weight * fac, depth + 1)
-        return 0.0
+    surface = output.inputs.get("Surface") if output is not None else None
+    # Light passing through the sheet is what light/shadow rays see, which Light Path tricks often
+    # route differently from what the camera sees: take whichever lets more light through.
+    return min(1.0, max(
+        sum(w for node, w in _walk_mixed_shaders(surface, rays=rays) if node.type == "BSDF_TRANSLUCENT")
+        for rays in ("camera", "light")
+    ))
 
-    return min(1.0, walk(output.inputs.get("Surface"), 1.0, 0)) if output is not None else 0.0
+
+def _mix_factor(mix_node: Any, rays: str = "camera") -> float:
+    """Factor of a Mix Shader for camera rays or for light/shadow rays.
+
+    Light Path tricks are resolved: "Is Camera Ray" is 1 only for camera rays, "Is Shadow Ray" only
+    for light rays. Any other driven factor (Fresnel, textures...) counts as half.
+    """
+    fac_in = mix_node.inputs[0]
+    if not fac_in.is_linked:
+        return float(fac_in.default_value)
+    link = fac_in.links[0]
+    if link.from_node.type == "LIGHT_PATH":
+        if link.from_socket.name == "Is Camera Ray":
+            return 1.0 if rays == "camera" else 0.0
+        if link.from_socket.name == "Is Shadow Ray":
+            return 1.0 if rays == "light" else 0.0
+        return 0.0
+    return 0.5
+
+
+def _walk_mixed_shaders(socket: Any, weight: float = 1.0, depth: int = 0,
+                        rays: str = "camera") -> List[Tuple[Any, float]]:
+    """Leaf shader nodes behind Mix/Add Shaders with the share of the surface each one gets."""
+    if socket is None or not socket.is_linked or depth > 8:
+        return []
+    node = socket.links[0].from_node
+    if node.type == "ADD_SHADER":
+        return (_walk_mixed_shaders(node.inputs[0], weight, depth + 1, rays)
+                + _walk_mixed_shaders(node.inputs[1], weight, depth + 1, rays))
+    if node.type == "MIX_SHADER":
+        fac = _mix_factor(node, rays)
+        return (_walk_mixed_shaders(node.inputs[1], weight * (1.0 - fac), depth + 1, rays)
+                + _walk_mixed_shaders(node.inputs[2], weight * fac, depth + 1, rays))
+    return [(node, weight)]
+
+
+def _subsurface_from_mixes(mat: Any) -> Optional[Dict[str, float]]:
+    """Subsurface of Principled BSDFs reached through Mix Shaders, which the classifier drops.
+
+    Returns ``{"value": share-weighted weight, "scale": metres}`` or None.
+    """
+    tree = getattr(mat, "node_tree", None)
+    output = _find_active_material_output(tree) if tree is not None else None
+    if output is None:
+        return None
+    total, scale = 0.0, 0.0
+    for node, share in _walk_mixed_shaders(output.inputs.get("Surface")):
+        if node.type != "BSDF_PRINCIPLED":
+            continue
+        w_in = node.inputs.get("Subsurface Weight") or node.inputs.get("Subsurface")
+        if w_in is None or w_in.is_linked or float(w_in.default_value) <= 0.0:
+            continue
+        total += share * float(w_in.default_value)
+        s_in = node.inputs.get("Subsurface Scale")
+        if s_in is not None and not s_in.is_linked:
+            scale = max(scale, float(s_in.default_value))
+    return {"value": round(min(1.0, total), 4), "scale": scale} if total > 0.01 else None
 
 
 def _resolve_blend_method(
@@ -2076,6 +2126,10 @@ def run_export(params: Dict[str, Any]) -> str:
             translucency = _translucency_weight(mat)
             if translucency > 0.01:
                 cls.channels["translucency"] = {"value": round(translucency, 4)}
+            if "subsurface" not in cls.channels:
+                subsurface = _subsurface_from_mixes(mat)
+                if subsurface is not None:
+                    cls.channels["subsurface"] = subsurface
             blend_method = _resolve_blend_method(mat, cls.channels, cls.blend_method)
             materials_manifest.append(
                 {
