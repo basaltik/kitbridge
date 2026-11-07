@@ -401,6 +401,30 @@ def set_thin_walled(mat: Any) -> bool:
     return done
 
 
+def _enable_tag_displacement(tag: Any, dtype_bool: int) -> bool:
+    """Turn displacement on in a Redshift Object tag; True only if a real switch was set.
+
+    Newer Redshift (seen in C4D 2027) has a Mode cycle Off / Render Settings / On, default
+    "Render Settings"; older builds have a bool. Match by identifier only: the "Displacement" label
+    also names the parameter group, and writing True into a group silently does nothing.
+    """
+    for bc, did, _ in tag.GetDescription(c4d.DESCFLAGS_DESC_NONE):
+        if str(bc[c4d.DESC_IDENT] or "") == "REDSHIFT_OBJECT_GEOMETRY_DISPLACEMENT_MODE":
+            for value, label in (bc[c4d.DESC_CYCLE] or []):
+                if str(label).strip().lower() == "on":
+                    tag[did] = value
+                    return True
+    legacy = compat.resolve_description_param(
+        tag,
+        context="redshift.object_tag.displacement_enabled",
+        idents=("REDSHIFT_OBJECT_GEOMETRY_DISPLACEMENTENABLED",),
+        names=(),
+        fallback_c4d_symbols=("REDSHIFT_OBJECT_GEOMETRY_DISPLACEMENTENABLED",),
+        prefer_dtypes=(dtype_bool,),
+    )
+    return legacy is not None and bool(compat.set_resolved_parameter(tag, legacy, True))
+
+
 def apply_displacement_object_tag(doc: Any, obj: Any, warnings: List[str]) -> Optional[Any]:
     """Add/enable displacement & tessellation on a Redshift Object tag (``1036222``) on *obj*.
 
@@ -450,18 +474,9 @@ def apply_displacement_object_tag(doc: Any, obj: Any, warnings: List[str]) -> Op
         fallback_c4d_symbols=("REDSHIFT_OBJECT_GEOMETRY_SUBDIVISIONENABLED",),
         prefer_dtypes=(dtype_bool,),
     )
-    disp_param = compat.resolve_description_param(
-        tag,
-        context="redshift.object_tag.displacement_enabled",
-        idents=("REDSHIFT_OBJECT_GEOMETRY_DISPLACEMENTENABLED", "displacementenabled"),
-        names=("Enable Displacement", "Displacement"),
-        fallback_c4d_symbols=("REDSHIFT_OBJECT_GEOMETRY_DISPLACEMENTENABLED",),
-        prefer_dtypes=(dtype_bool,),
-    )
-
     compat.set_resolved_parameter(tag, override_param, True)
     compat.set_resolved_parameter(tag, tess_param, True)
-    disp_ok = compat.set_resolved_parameter(tag, disp_param, True)
+    disp_ok = _enable_tag_displacement(tag, dtype_bool)
 
     if disp_ok:
         warnings.append(
