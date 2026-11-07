@@ -67,3 +67,22 @@ quirk, deprioritised.
 Worst now: Bosch 0.764 (above), Wood Fluted Panel 0.873 (object-space pattern direction in the
 reference), Brick Apartments 0.893, Glass bricks array 0.903, "Wood" material 0.914 (ΔE 9.5),
 lamp 0.921 (Redshift caustics, see #3).
+
+## Run 5 (2026-11-08, exporter v7): Cycles displacement method
+Root cause found through "Wood" (b76294bf): with no relief the Cycles and Redshift renders agree
+(mean 0.212 vs 0.214); the whole gap came from relief. The exporter ignored the material's
+displacement method, and the importer always made true Redshift displacement. But Cycles' default
+**BUMP** never moves geometry: Brick Apartments, Urban Loft, the multi-storey building and the
+wall panel were displaced in Redshift and not in Cycles. **BOTH** moves geometry *and* shades the
+height as bump, which the importer dropped.
+Now the manifest records `displacement.method`; the importer moves geometry only for
+DISPLACEMENT/BOTH and adds the height as a Redshift height bump (scale = displacement scale in cm)
+for BUMP/BOTH. Several bump sources (normal, bump, height) are stacked with an additive Bump
+Blender; previously the bump map was dropped whenever a normal map existed.
+Results: Brick Apartments 0.893 → 0.921 (IoU 0.965 → 0.999), Urban Loft 0.923 → 0.945,
+multi-storey building 0.927 → 0.948 (ΔE 6.1 → 3.3), Wood Fluted Panel 0.873 → 0.885
+(IoU 0.832 → 0.954), "Wood" 0.914 → 0.926; nothing got worse. Median SSIM 0.985, median ΔE
+4.56 → **3.94**, IoU < 0.9: 5 → 4. The Dragon (526cec87) now scores (SSIM 0.993).
+Open: Redshift's height bump darkens less than Cycles' (Wood flat: Cycles 0.134, RS 0.194, and RS
+saturates above scale ≈ 7.5) — the remaining "Wood" gap. Arnold: height-as-bump not done yet (it
+only skips true displacement for BUMP).

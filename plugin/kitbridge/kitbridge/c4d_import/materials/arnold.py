@@ -309,7 +309,8 @@ def build_arnold_material(plan: MaterialPlan, material_name: Optional[str] = Non
 
         # 4. Displacement -> material.displacement
         disp_op = plan.ops.get("displacement")
-        if disp_op is not None and disp_op.is_texture and disp_op.texture is not None:
+        # Cycles' BUMP method never moves geometry (Arnold height-as-bump: TODO).
+        if plan.has_displacement and disp_op is not None and disp_op.is_texture and disp_op.texture is not None:
             disp_img_node = img_nodes_by_key.get(disp_op.texture.texture_key)
             if disp_img_node is not None:
                 scale_cm = float(disp_op.texture.scale)

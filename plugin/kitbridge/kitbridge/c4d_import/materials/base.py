@@ -185,7 +185,8 @@ class MaterialPlan:
     has_transmission: bool = False
     requires_alpha: bool = False
     is_non_opaque: bool = False
-    has_displacement: bool = False
+    has_displacement: bool = False  # move geometry (Cycles method DISPLACEMENT or BOTH)
+    displacement_as_bump: bool = False  # shade the height as bump (Cycles method BUMP or BOTH)
     baked_channels: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
 
@@ -577,8 +578,11 @@ def build_material_plan(
                 )
 
     has_displacement = False
+    displacement_as_bump = False
     if "displacement" in channels and isinstance(channels["displacement"], dict):
         disp_entry = channels["displacement"]
+        # Packages before exporter 7 have no method: keep their old behaviour (true displacement).
+        disp_method = str(disp_entry.get("method") or "DISPLACEMENT").upper()
         if "texture" in disp_entry:
             tex_op = _register_texture_op(
                 "displacement",
@@ -587,7 +591,8 @@ def build_material_plan(
                 default_channel="r",
             )
             if tex_op is not None:
-                has_displacement = True
+                has_displacement = disp_method in ("DISPLACEMENT", "BOTH")
+                displacement_as_bump = disp_method in ("BUMP", "BOTH")
                 ops["displacement"] = ChannelOp(
                     channel_name="displacement",
                     kind="texture",
@@ -630,6 +635,7 @@ def build_material_plan(
         requires_alpha=requires_alpha,
         is_non_opaque=is_non_opaque,
         has_displacement=has_displacement,
+        displacement_as_bump=displacement_as_bump,
         baked_channels=baked_channels,
         warnings=warnings,
     )

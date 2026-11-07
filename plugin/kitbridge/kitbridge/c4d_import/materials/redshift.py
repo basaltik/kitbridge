@@ -47,6 +47,7 @@ NODE_COLOR_SPLITTER = "com.redshift3d.redshift4c4d.nodes.core.rscolorsplitter"
 NODE_MATH_INV = "com.redshift3d.redshift4c4d.nodes.core.rsmathinv"
 NODE_BUMP_MAP = "com.redshift3d.redshift4c4d.nodes.core.bumpmap"
 NODE_DISPLACEMENT = "com.redshift3d.redshift4c4d.nodes.core.displacement"
+NODE_BUMP_BLENDER = "com.redshift3d.redshift4c4d.nodes.core.bumpblender"
 
 # Output node ports
 PORT_OUT_SURFACE = "com.redshift3d.redshift4c4d.node.output.surface"
@@ -106,6 +107,14 @@ PORT_BM_SCALE = _BM + "scale"
 PORT_BM_INPUTTYPE = _BM + "inputtype"
 PORT_BM_FLIPY = _BM + "flipy"
 PORT_BM_OUT = _BM + "out"
+
+# Bump Blender ports (stacks several bump sources)
+_BB = "com.redshift3d.redshift4c4d.nodes.core.bumpblender."
+PORT_BB_BASE = _BB + "baseinput"
+PORT_BB_INPUT = _BB + "bumpinput%d"
+PORT_BB_WEIGHT = _BB + "bumpweight%d"
+PORT_BB_ADDITIVE = _BB + "additive"
+PORT_BB_OUT = _BB + "outdisplacementvector"
 
 # Displacement ports
 _DP = "com.redshift3d.redshift4c4d.nodes.core.displacement."
@@ -315,51 +324,55 @@ def build_redshift_material(plan: MaterialPlan, material_name: Optional[str] = N
             elif rough_op is not None and rough_op.is_value and rough_op.value is not None:
                 _set_sm_input(std_node, PORT_SM_REFR_ROUGHNESS, rough_op.value)
 
-        # 3. Normal / Bump -> bumpmap node -> standardmaterial.bump_input
+        # 3. Normal / Bump / displacement-as-bump -> bumpmap nodes -> standardmaterial.bump_input
+        #    (several sources are stacked with an additive Bump Blender, like Cycles chains them)
+        bump_sources: List[Tuple[str, Any]] = []
+
+        def _add_bump_map(tex_out: Any, input_type: int, scale: float, flip_y: bool = False) -> Any:
+            bm_node = compat.add_shader_node(graph, NODE_BUMP_MAP)
+            compat.connect_ports(tex_out, compat.find_port(bm_node, PORT_BM_INPUT, is_input=True))
+            compat.set_port_value(compat.find_port(bm_node, PORT_BM_INPUTTYPE, is_input=True), input_type)
+            compat.set_port_value(compat.find_port(bm_node, PORT_BM_SCALE, is_input=True), float(scale))
+            if flip_y:
+                compat.set_port_value(compat.find_port(bm_node, PORT_BM_FLIPY, is_input=True), True)
+            return compat.find_port(bm_node, PORT_BM_OUT, is_input=False)
+
         nrm_op = plan.ops.get("normal")
-        bump_op = plan.ops.get("bump")
         if nrm_op is not None and nrm_op.is_texture and nrm_op.texture is not None:
-            if bump_op is not None and bump_op.is_texture:
-                warnings.append(
-                    f"Material '{plan.name}': both 'normal' and 'bump' channels present; "
-                    "connected 'normal' to Redshift bump_input."
-                )
             nrm_tex_out = _resolve_tex_output_port(nrm_op.texture)
             if nrm_tex_out is not None:
-                bm_node = compat.add_shader_node(graph, NODE_BUMP_MAP)
-                bm_in = compat.find_port(bm_node, PORT_BM_INPUT, is_input=True)
-                bm_type = compat.find_port(bm_node, PORT_BM_INPUTTYPE, is_input=True)
-                bm_scale = compat.find_port(bm_node, PORT_BM_SCALE, is_input=True)
-                bm_flipy = compat.find_port(bm_node, PORT_BM_FLIPY, is_input=True)
-                bm_out = compat.find_port(bm_node, PORT_BM_OUT, is_input=False)
-
-                compat.connect_ports(nrm_tex_out, bm_in)
-                compat.set_port_value(bm_type, BUMP_INPUTTYPE_TANGENT_NORMAL)
-                compat.set_port_value(bm_scale, float(nrm_op.texture.strength))
-                if nrm_op.texture.flip_green:
-                    compat.set_port_value(bm_flipy, True)
-
-                if _connect_to_sm_input(bm_out, std_node, PORT_SM_BUMP_INPUT):
-                    connected_channels.append("normal")
-        elif bump_op is not None and bump_op.is_texture and bump_op.texture is not None:
+                bump_sources.append(("normal", _add_bump_map(
+                    nrm_tex_out, BUMP_INPUTTYPE_TANGENT_NORMAL, nrm_op.texture.strength,
+                    flip_y=bool(nrm_op.texture.flip_green))))
+        bump_op = plan.ops.get("bump")
+        if bump_op is not None and bump_op.is_texture and bump_op.texture is not None:
             bump_tex_out = _resolve_tex_output_port(bump_op.texture)
             if bump_tex_out is not None:
-                bm_node = compat.add_shader_node(graph, NODE_BUMP_MAP)
-                bm_in = compat.find_port(bm_node, PORT_BM_INPUT, is_input=True)
-                bm_type = compat.find_port(bm_node, PORT_BM_INPUTTYPE, is_input=True)
-                bm_scale = compat.find_port(bm_node, PORT_BM_SCALE, is_input=True)
-                bm_out = compat.find_port(bm_node, PORT_BM_OUT, is_input=False)
-
-                compat.connect_ports(bump_tex_out, bm_in)
-                compat.set_port_value(bm_type, BUMP_INPUTTYPE_HEIGHT)
-                compat.set_port_value(bm_scale, float(bump_op.texture.strength))
-
-                if _connect_to_sm_input(bm_out, std_node, PORT_SM_BUMP_INPUT):
-                    connected_channels.append("bump")
-
-        # 4. Displacement -> displacement node -> output.displacement
+                bump_sources.append(("bump", _add_bump_map(
+                    bump_tex_out, BUMP_INPUTTYPE_HEIGHT, bump_op.texture.strength)))
         disp_op = plan.ops.get("displacement")
-        if disp_op is not None and disp_op.is_texture and disp_op.texture is not None:
+        if (plan.displacement_as_bump and disp_op is not None and disp_op.is_texture
+                and disp_op.texture is not None):
+            # Cycles shades the height as bump (method BUMP, or BOTH on top of the moved geometry).
+            disp_bump_out = _resolve_tex_output_port(disp_op.texture)
+            if disp_bump_out is not None:
+                bump_sources.append(("displacement_bump", _add_bump_map(
+                    disp_bump_out, BUMP_INPUTTYPE_HEIGHT, disp_op.texture.scale)))
+
+        bump_final = bump_sources[0][1] if len(bump_sources) == 1 else None
+        if len(bump_sources) > 1:
+            blender = compat.add_shader_node(graph, NODE_BUMP_BLENDER)
+            compat.set_port_value(compat.find_port(blender, PORT_BB_ADDITIVE, is_input=True), True)
+            compat.connect_ports(bump_sources[0][1], compat.find_port(blender, PORT_BB_BASE, is_input=True))
+            for i, (_, out_port) in enumerate(bump_sources[1:4]):
+                compat.connect_ports(out_port, compat.find_port(blender, PORT_BB_INPUT % i, is_input=True))
+                compat.set_port_value(compat.find_port(blender, PORT_BB_WEIGHT % i, is_input=True), 1.0)
+            bump_final = compat.find_port(blender, PORT_BB_OUT, is_input=False)
+        if bump_final is not None and _connect_to_sm_input(bump_final, std_node, PORT_SM_BUMP_INPUT):
+            connected_channels.extend(name for name, _ in bump_sources)
+
+        # 4. Displacement -> displacement node -> output.displacement (only if Cycles moves geometry)
+        if plan.has_displacement and disp_op is not None and disp_op.is_texture and disp_op.texture is not None:
             disp_tex_out = _resolve_tex_output_port(disp_op.texture)
             if disp_tex_out is not None:
                 dp_node = compat.add_shader_node(graph, NODE_DISPLACEMENT)

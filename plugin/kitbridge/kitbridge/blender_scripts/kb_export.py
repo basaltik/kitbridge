@@ -57,7 +57,7 @@ from kitbridge.core import shader_graph  # noqa: E402
 
 SCHEMA_VERSION = 1
 # Keep equal to pipeline.EXPORTER_VERSION; raise both when packages need converting again.
-EXPORTER_VERSION = 6  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests; 6: pristine bakes, fine normals, SSS/translucency
+EXPORTER_VERSION = 7  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests; 6: pristine bakes, fine normals, SSS/translucency; 7: displacement method
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -1571,7 +1571,7 @@ def _bake_material_channels(
                     raw_scale = float(
                         shader_graph.get_input_socket(disp_node, "Scale").default_value
                     ) if disp_node is not None and disp_node.bl_idname == "ShaderNodeDisplacement" else 0.05
-                    method = str(getattr(mat.cycles, "displacement_method", "") or "")
+                    method = _displacement_method(mat)
                     log_info(
                         f"bake: displacement stats before normalization for {mat.name!r}: "
                         f"midlevel={raw_midlevel:.9g}, scale={raw_scale:.9g}, method={method!r}"
@@ -1885,6 +1885,18 @@ def _subsurface_from_mixes(mat: Any) -> Optional[Dict[str, float]]:
     return {"value": round(min(1.0, total), 4), "scale": scale} if total > 0.01 else None
 
 
+def _displacement_method(mat: Any) -> str:
+    """Cycles displacement method: BUMP (default), DISPLACEMENT or BOTH.
+
+    Blender 4.1+ keeps it on the material; older versions on ``mat.cycles``.
+    """
+    for owner in (mat, getattr(mat, "cycles", None)):
+        raw = str(getattr(owner, "displacement_method", "") or "").upper() if owner is not None else ""
+        if raw in ("BUMP", "DISPLACEMENT", "BOTH"):
+            return raw
+    return "BUMP"
+
+
 def _resolve_blend_method(
     mat: Any,
     channels: Dict[str, Dict[str, Any]],
@@ -2134,7 +2146,11 @@ def run_export(params: Dict[str, Any]) -> str:
                 subsurface = _subsurface_from_mixes(mat)
                 if subsurface is not None:
                     cls.channels["subsurface"] = subsurface
-            blend_method = _resolve_blend_method(mat, cls.channels, cls.blend_method)
+            disp_entry = cls.channels.get("displacement")
+            if isinstance(disp_entry, dict):
+                # Cycles' default "BUMP" never moves geometry; true displacement there is wrong.
+                disp_entry["method"] = _displacement_method(mat)
+            blend_method =_resolve_blend_method(mat, cls.channels, cls.blend_method)
             materials_manifest.append(
                 {
                     "name": mat.name,

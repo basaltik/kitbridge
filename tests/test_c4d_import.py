@@ -216,6 +216,28 @@ def test_displacement_and_bump_cm_conversion_and_non_opaque(tmp_path: Path) -> N
     assert pytest.approx(plan.ops["ior"].value) == 1.5
 
 
+@pytest.mark.parametrize(
+    "method, moves, as_bump",
+    [
+        (None, True, False),  # packages before exporter 7: unchanged behaviour
+        ("BUMP", False, True),  # Cycles default: geometry never moves
+        ("DISPLACEMENT", True, False),
+        ("BOTH", True, True),
+    ],
+)
+def test_displacement_method_decides_geometry_and_bump(tmp_path: Path, method, moves, as_bump) -> None:
+    (tmp_path / "textures").mkdir()
+    (tmp_path / "textures" / "h.png").write_bytes(b"data")
+    disp = {"texture": "textures/h.png", "colorspace": "raw", "scale": 0.075, "midlevel": 0.5}
+    if method:
+        disp["method"] = method
+    plan = base.build_material_plan({"name": "m", "channels": {"displacement": disp}}, str(tmp_path))
+
+    assert plan.has_displacement is moves
+    assert plan.displacement_as_bump is as_bump
+    assert "displacement" in plan.ops
+
+
 def test_missing_texture_falls_back_to_default_with_warning(tmp_path: Path) -> None:
     mat_dict = {
         "name": "MissingTexMat",
