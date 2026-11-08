@@ -52,9 +52,10 @@ from .renderer import (
     RENDERER_STANDARD,
     detect_renderer,
     normalise_renderer,
+    renderer_installed,
 )
 
-log = logging.getLogger("kitbridge")
+log =logging.getLogger("kitbridge")
 
 
 @dataclass
@@ -285,12 +286,23 @@ def import_package(
         if renderer is not None
         else detect_renderer(doc)
     )
+    fallback_warning: Optional[str] = None
+    if resolved_renderer and not renderer_installed(resolved_renderer):
+        # e.g. Arnold chosen but not installed in this Cinema 4D: its node space and tags are
+        # missing, and creating an Arnold tag aborts the whole import.
+        fallback_warning = (
+            f"{resolved_renderer.capitalize()} is not installed in this Cinema 4D; "
+            "imported with Standard materials."
+        )
+        resolved_renderer = RENDERER_STANDARD
 
     result = ImportResult(
         asset_name=os.path.basename(os.path.normpath(package_dir or "")),
         asset_type="unknown",
         renderer=resolved_renderer,
     )
+    if fallback_warning:
+        result.warnings.append(fallback_warning)
 
     # 1. Read kitbridge.json manifest
     manifest_path = os.path.join(package_dir, "kitbridge.json")

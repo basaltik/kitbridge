@@ -355,8 +355,13 @@ def apply_non_opaque_object_tag(doc: Any, obj: Any, warnings: List[str]) -> Opti
 
     tag = obj.GetTag(ARNOLD_PARAMS_TAG_ID) if hasattr(obj, "GetTag") else None
     created_new = False
-    if tag is None and hasattr(obj, "MakeTag"):
+    tag_plugin_missing = (
+        c4d.plugins.FindPlugin(ARNOLD_PARAMS_TAG_ID, getattr(c4d, "PLUGINTYPE_TAG", 3)) is None
+        if hasattr(c4d, "plugins") else False
+    )
+    if tag is None and hasattr(obj, "MakeTag") and not tag_plugin_missing:
         try:
+            # A missing tag plugin raises BaseException, not Exception: check FindPlugin first.
             tag = obj.MakeTag(ARNOLD_PARAMS_TAG_ID)
             created_new = tag is not None
         except Exception as exc:

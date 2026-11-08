@@ -98,3 +98,12 @@ Also: Arnold now shades the height as bump too (bump2d chained after the normal 
 Bump Blender). Redshift's height bump darkens less than Cycles' for extreme relief (Wood b76294bf:
 flat sphere Cycles 0.134 vs RS 0.194; RS saturates above scale ≈ 7.5, `factorinobjscale` makes no
 difference) — left as is: a baked normal map would lose tiling detail on real models.
+
+## C4D 2024 check (2026-11-08, c4dpy 2024.2, no Arnold installed)
+Redshift and Standard import the Wood material, Brick Apartments (UDIM), the table lamp and the
+glass handrail with no errors; Brick Apartments: 112 objects, 905k polygons, 27 materials,
+13.6 × 24.5 × 10.8 m. Bug found and fixed: with Arnold chosen but not installed, materials fell
+back to Standard but the Arnold Parameters tag aborted the whole import (`MakeTag` of a missing
+plugin raises BaseException). The importer now checks `renderer_installed` first and imports with
+Standard plus a warning; the tag code checks `FindPlugin`. `CRITICAL: Stop [ge_container.h]` lines
+during the FBX import are C4D debug output when FBX importer prefs are read; harmless.
