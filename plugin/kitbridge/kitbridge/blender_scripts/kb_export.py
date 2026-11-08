@@ -972,6 +972,9 @@ def _configure_cycles_for_baking(scene: Any, bake_resolution: int) -> Dict[str, 
         bake_cfg.use_selected_to_active = False
         bake_cfg.margin = max(2, min(16, bake_resolution // 256))
         bake_cfg.target = "IMAGE_TEXTURES"
+    with contextlib.suppress(Exception):
+        # The default ADJACENT_FACES margin added ~15 s to every 2K bake.
+        bake_cfg.margin_type = "EXTEND"
 
     return saved
 
@@ -1160,6 +1163,15 @@ def _srgb_to_linear(c: float) -> float:
     return ((c + 0.055) / 1.055) ** 2.4
 
 
+def _pixels_rgba(image: Any) -> Any:
+    """The image's pixels as an (N, 4) float32 numpy array (list(image.pixels) takes ~a minute at 2K)."""
+    import numpy as np  # bundled with Blender
+
+    buf = np.empty(len(image.pixels), dtype=np.float32)
+    image.pixels.foreach_get(buf)
+    return buf.reshape(-1, 4)
+
+
 def _detect_constant_bake(
     bake_img: Any,
     ch_name: str,
@@ -1173,41 +1185,26 @@ def _detect_constant_bake(
         # yet carries the whole look; only drop a truly flat map.
         tol = min(tol, 0.0005)
     try:
-        px = list(bake_img.pixels)
+        px = _pixels_rgba(bake_img)
     except Exception:
         return False, None
-    if len(px) < 4:
+    if px.shape[0] < 1:
         return False, None
 
-    r_all = px[0::4]
-    g_all = px[1::4]
-    b_all = px[2::4]
-    a_all = px[3::4]
-
     # When baked with use_clear=False onto an alpha=0 image, UV island pixels have alpha >= 0.99
-    if min(a_all) < 0.99 and max(a_all) >= 0.99:
-        rs = [r for r, a in zip(r_all, a_all) if a >= 0.99]
-        if not rs:
+    alpha = px[:, 3]
+    if alpha.min() < 0.99 and alpha.max() >= 0.99:
+        px = px[alpha >= 0.99]
+        if px.shape[0] == 0:
             return False, None
-        r_min, r_max = min(rs), max(rs)
-        if (r_max - r_min) > tol:
-            return False, None
-        if is_color or ch_name == "normal":
-            gs = [g for g, a in zip(g_all, a_all) if a >= 0.99]
-            bs = [b for b, a in zip(b_all, a_all) if a >= 0.99]
-            g_min, g_max = min(gs), max(gs)
-            b_min, b_max = min(bs), max(bs)
-        else:
-            g_min = g_max = b_min = b_max = 0.0
+    r_min, r_max = float(px[:, 0].min()), float(px[:, 0].max())
+    if (r_max - r_min) > tol:
+        return False, None
+    if is_color or ch_name == "normal":
+        g_min, g_max = float(px[:, 1].min()), float(px[:, 1].max())
+        b_min, b_max = float(px[:, 2].min()), float(px[:, 2].max())
     else:
-        r_min, r_max = min(r_all), max(r_all)
-        if (r_max - r_min) > tol:
-            return False, None
-        if is_color or ch_name == "normal":
-            g_min, g_max = min(g_all), max(g_all)
-            b_min, b_max = min(b_all), max(b_all)
-        else:
-            g_min = g_max = b_min = b_max = 0.0
+        g_min = g_max = b_min = b_max = 0.0
 
     if ch_name == "normal":
         if (g_max - g_min) <= tol and (b_max - b_min) <= tol:
@@ -1578,18 +1575,14 @@ def _bake_material_channels(
 
                 manifest_midlevel = manifest_scale = None
                 if ch_name == "displacement":
-                    pixels = list(bake_img.pixels)
-                    valid = [
-                        float(pixels[i])
-                        for i in range(0, len(pixels), 4)
-                        if len(pixels) > i + 3 and float(pixels[i + 3]) >= 0.99
-                    ]
-                    if not valid:
-                        valid = [float(pixels[i]) for i in range(0, len(pixels), 4)]
-                    if not valid:
+                    pixels = _pixels_rgba(bake_img)
+                    valid = pixels[pixels[:, 3] >= 0.99, 0]
+                    if valid.size == 0:
+                        valid = pixels[:, 0]
+                    if valid.size == 0:
                         raise RuntimeError("displacement bake produced no pixels")
-                    raw_min, raw_max = min(valid), max(valid)
-                    raw_mean = sum(valid) / len(valid)
+                    raw_min, raw_max = float(valid.min()), float(valid.max())
+                    raw_mean = float(valid.mean())
                     log_info(
                         f"bake: displacement float stats for {mat.name!r}: "
                         f"min={raw_min:.9g}, max={raw_max:.9g}, mean={raw_mean:.9g}"
@@ -1597,12 +1590,11 @@ def _bake_material_channels(
                     span = raw_max - raw_min
                     if span <= 1e-12:
                         raise RuntimeError("displacement bake is constant but was not detected")
-                    for pixel_index in range(0, len(pixels), 4):
-                        value = (float(pixels[pixel_index]) - raw_min) / span
-                        pixels[pixel_index] = value
-                        pixels[pixel_index + 1] = value
-                        pixels[pixel_index + 2] = value
-                    bake_img.pixels = pixels
+                    norm = (pixels[:, 0] - raw_min) / span
+                    pixels[:, 0] = norm
+                    pixels[:, 1] = norm
+                    pixels[:, 2] = norm
+                    bake_img.pixels.foreach_set(pixels.ravel())
                     # Texels are the baked displacement in metres, normalised: d = min + t * span.
                     # The importer computes scale * (t - midlevel), so scale = span and
                     # midlevel = -min / span reproduce d exactly.

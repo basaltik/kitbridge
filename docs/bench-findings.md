@@ -107,3 +107,19 @@ back to Standard but the Arnold Parameters tag aborted the whole import (`MakeTa
 plugin raises BaseException). The importer now checks `renderer_installed` first and imports with
 Standard plus a warning; the tag code checks `FindPlugin`. `CRITICAL: Stop [ge_container.h]` lines
 during the FBX import are C4D debug output when FBX importer prefs are read; harmless.
+
+## Conversion speed and an open nondeterminism (2026-11-08)
+Wood Fluted Panel at 2048 took ~210 s to convert (user report). Profile: Cycles itself is ~2 s per
+bake; the rest is inside Blender's bake operator. The ADJACENT_FACES margin cost ~15 s per 2K bake;
+it is now EXTEND (210 → ~155 s). Pixel post-processing moved from Python lists to numpy
+(`_pixels_rgba`), which was not the bottleneck but removes 16M-element lists. Fewer samples or
+GPU-only devices made no difference. The remaining ~35 s per 2K bake is inside the operator
+(not margin, not Python) — not found yet.
+**Open, important:** the same exporter on the same .blend bakes a *different* procedural pattern
+on every run (Wood Fluted Panel: the flute band sits at a different height each time, and when it
+falls off the sphere the displacement is dropped as constant). Not Python hashing (same
+PYTHONHASHSEED differs too), not the texture space of the bmesh sphere (pinning it to the bounding
+box did not help). The material uses Generated coordinates, Noise and a Float Curve inside a group.
+Next: bake one channel twice in one Blender session; check whether the pristine copy and the
+flattened copy alternate, and whether Generated coordinates of the bake object change between runs.
+This probably also explains the "pattern direction" difference in the bench.
