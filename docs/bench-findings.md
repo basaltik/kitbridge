@@ -86,3 +86,15 @@ multi-storey building 0.927 → 0.948 (ΔE 6.1 → 3.3), Wood Fluted Panel 0.873
 Open: Redshift's height bump darkens less than Cycles' (Wood flat: Cycles 0.134, RS 0.194, and RS
 saturates above scale ≈ 7.5) — the remaining "Wood" gap. Arnold: height-as-bump not done yet (it
 only skips true displacement for BUMP).
+
+## Run 6 (2026-11-08, exporter v8): real UDIM tiles
+The "dark rectangles" on the Mad_ building facades were not lighting: every UDIM tile file was a
+copy of tile 1001. `image.pixels` always holds the first tile whatever `tiles.active` says, so the
+per-tile pixel copy wrote identical files. The exporter now saves the tiled image through its own
+`<UDIM>` path, which makes Blender write every tile (packed or external), then downsizes each tile.
+Brick Apartments 0.921 → **0.978** (ΔE 8.5 → 2.0), Urban Loft 0.945 → **0.991** (ΔE 9.6 → 1.0).
+Bench: median SSIM **0.987**, median ΔE **2.65**, IoU < 0.9: 4.
+Also: Arnold now shades the height as bump too (bump2d chained after the normal map, like Redshift's
+Bump Blender). Redshift's height bump darkens less than Cycles' for extreme relief (Wood b76294bf:
+flat sphere Cycles 0.134 vs RS 0.194; RS saturates above scale ≈ 7.5, `factorinobjscale` makes no
+difference) — left as is: a baked normal map would lose tiling detail on real models.

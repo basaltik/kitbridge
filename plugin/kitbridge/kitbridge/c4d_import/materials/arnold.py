@@ -27,7 +27,7 @@ and only the low-level ``maxon`` graph API (C4D 2023.0+).
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .. import compat
 from ..compat import c4d
@@ -285,31 +285,40 @@ def build_arnold_material(plan: MaterialPlan, material_name: Optional[str] = Non
                     _set_node_input(nm_node, PORT_NM_INVERT_Y, True)
                 nrm_node_out_port = compat.find_port(nm_node, PORT_NM_OUT, is_input=False)
 
+        # Height sources become bump2d nodes chained through their .normal input (Cycles stacks them).
+        heights: List[Tuple[str, Any, float]] = []
         if bump_op is not None and bump_op.is_texture and bump_op.texture is not None:
             bump_tex_out = _resolve_tex_output_port(bump_op.texture, prefer_scalar_on_invert=True)
             if bump_tex_out is not None:
-                b2d_node = compat.add_shader_node(graph, NODE_BUMP2D)
-                _connect_to_node_input(bump_tex_out, b2d_node, PORT_B2D_BUMP_MAP)
                 height_val = float(bump_op.texture.strength) * float(bump_op.texture.distance_cm or 1.0)
                 if abs(height_val) <= 1e-6:
                     height_val = float(bump_op.texture.strength)
-                _set_node_input(b2d_node, PORT_B2D_BUMP_HEIGHT, height_val)
+                heights.append(("bump", bump_tex_out, height_val))
+        disp_bump_op = plan.ops.get("displacement")
+        if (plan.displacement_as_bump and disp_bump_op is not None and disp_bump_op.is_texture
+                and disp_bump_op.texture is not None):
+            disp_bump_out = _resolve_tex_output_port(disp_bump_op.texture, prefer_scalar_on_invert=True)
+            if disp_bump_out is not None:
+                # With true displacement the image node is already multiplied by the scale (below).
+                height_val = 1.0 if plan.has_displacement else float(disp_bump_op.texture.scale)
+                heights.append(("displacement_bump", disp_bump_out, height_val))
 
-                # Chain normal_map -> bump2d.normal if both normal and bump are present
-                if nrm_node_out_port is not None:
-                    if _connect_to_node_input(nrm_node_out_port, b2d_node, PORT_B2D_NORMAL):
-                        connected_channels.append("normal")
-
-                b2d_out = compat.find_port(b2d_node, PORT_B2D_OUT, is_input=False)
-                if _connect_to_node_input(b2d_out, surf_node, PORT_SS_NORMAL):
-                    connected_channels.append("bump")
-        elif nrm_node_out_port is not None:
-            if _connect_to_node_input(nrm_node_out_port, surf_node, PORT_SS_NORMAL):
-                connected_channels.append("normal")
+        chain_out = nrm_node_out_port
+        chain_names = ["normal"] if nrm_node_out_port is not None else []
+        for name, tex_out, height_val in heights:
+            b2d_node = compat.add_shader_node(graph, NODE_BUMP2D)
+            _connect_to_node_input(tex_out, b2d_node, PORT_B2D_BUMP_MAP)
+            _set_node_input(b2d_node, PORT_B2D_BUMP_HEIGHT, height_val)
+            if chain_out is not None:
+                _connect_to_node_input(chain_out, b2d_node, PORT_B2D_NORMAL)
+            chain_out = compat.find_port(b2d_node, PORT_B2D_OUT, is_input=False)
+            chain_names.append(name)
+        if chain_out is not None and _connect_to_node_input(chain_out, surf_node, PORT_SS_NORMAL):
+            connected_channels.extend(chain_names)
 
         # 4. Displacement -> material.displacement
         disp_op = plan.ops.get("displacement")
-        # Cycles' BUMP method never moves geometry (Arnold height-as-bump: TODO).
+        # Cycles' BUMP method never moves geometry (the height is shaded as bump above).
         if plan.has_displacement and disp_op is not None and disp_op.is_texture and disp_op.texture is not None:
             disp_img_node = img_nodes_by_key.get(disp_op.texture.texture_key)
             if disp_img_node is not None:

@@ -57,7 +57,7 @@ from kitbridge.core import shader_graph  # noqa: E402
 
 SCHEMA_VERSION = 1
 # Keep equal to pipeline.EXPORTER_VERSION; raise both when packages need converting again.
-EXPORTER_VERSION = 7  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests; 6: pristine bakes, fine normals, SSS/translucency; 7: displacement method
+EXPORTER_VERSION = 8  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests; 6: pristine bakes, fine normals, SSS/translucency; 7: displacement method; 8: real UDIM tiles
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -469,14 +469,6 @@ def _unique_texture_path(tex_dir: str, desired_name: str, claimed: Set[str]) -> 
     return os.path.join(tex_dir, candidate)
 
 
-def _udim_tile_source_path(image: Any, tile: Any, raw_fp: str) -> str:
-    """Resolve one tiled image source without changing Blender's active tile."""
-    tile_fp = str(getattr(tile, "filepath", "") or "")
-    template = tile_fp or raw_fp
-    path = template.replace("<UDIM>", str(int(tile.number)))
-    return os.path.normpath(bpy.path.abspath(path, library=image.library))
-
-
 def _collect_udim_image(
     image: Any,
     tex_dir: str,
@@ -498,62 +490,37 @@ def _collect_udim_image(
         manifest_template = stem + ".png"
         with contextlib.suppress(Exception):
             image.file_format = "PNG"
-    for tile in list(getattr(image, "tiles", ())):
-        tile_num = int(tile.number)
+    # Save the tiled image through its own <UDIM> path: Blender writes every tile. (image.pixels
+    # always holds tile 1001 whatever tiles.active says, so copying pixels gave identical tiles.)
+    tile_nums = [int(t.number) for t in getattr(image, "tiles", ())]
+    try:
+        image.file_format = "PNG" if ext.lower() == ".png" else image.file_format
+        image.filepath_raw = os.path.join(tex_dir, os.path.basename(manifest_template))
+        image.save()
+    except Exception as exc:
+        emit_warning(f"UDIM tiles for '{image.name}' could not be written ({exc}).")
+    for tile_num in tile_nums:
         target_abs = os.path.join(
             tex_dir, shader_graph.udim_tile_filename(manifest_template, tile_num)
         )
-        tile_image = None
-        try:
-            image.tiles.active = tile
-            width, height = image.size
-            pixels = list(image.pixels)
-            tile_image = bpy.data.images.new(
-                f"{image.name}_tile_{tile_num}",
-                width=width,
-                height=height,
-                alpha=True,
-                float_buffer=bool(getattr(image, "is_float", False)),
-            )
-            tile_image.file_format = "PNG" if ext.lower() == ".png" else image.file_format
-            tile_image.pixels.foreach_set(pixels)
-            tile_image.filepath_raw = target_abs
-            tile_image.save()
-            bpy.data.images.remove(tile_image)
-            tile_image = None
-        except Exception as exc:
-            if tile_image is not None:
-                with contextlib.suppress(Exception):
-                    bpy.data.images.remove(tile_image)
-            emit_warning(f"UDIM tile {tile_num} for '{image.name}' could not be written ({exc}).")
-            continue
         if not os.path.isfile(target_abs) or os.path.getsize(target_abs) <= 0:
             emit_warning(f"UDIM tile {tile_num} for '{image.name}' was not written.")
             continue
         claimed.add(os.path.basename(target_abs).lower())
         if max_texture_size > 0:
             with contextlib.suppress(Exception):
-                image.tiles.active = tile
-                w, h = image.size
-                longest = max(int(w), int(h))
-                if longest > max_texture_size:
-                    image.scale(
-                        max(1, int(round(w * max_texture_size / longest))),
-                        max(1, int(round(h * max_texture_size / longest))),
-                    )
-                    scaled_pixels = list(image.pixels)
-                    scaled = bpy.data.images.new(
-                        f"{image.name}_scaled_{tile_num}",
-                        width=image.size[0],
-                        height=image.size[1],
-                        alpha=True,
-                        float_buffer=bool(getattr(image, "is_float", False)),
-                    )
-                    scaled.file_format = "PNG" if ext.lower() == ".png" else image.file_format
-                    scaled.pixels.foreach_set(scaled_pixels)
-                    scaled.filepath_raw = target_abs
-                    scaled.save()
-                    bpy.data.images.remove(scaled)
+                tile_img = bpy.data.images.load(target_abs)
+                try:
+                    w, h = tile_img.size
+                    longest = max(int(w), int(h))
+                    if longest > max_texture_size:
+                        tile_img.scale(
+                            max(1, int(round(w * max_texture_size / longest))),
+                            max(1, int(round(h * max_texture_size / longest))),
+                        )
+                        tile_img.save()
+                finally:
+                    bpy.data.images.remove(tile_img)
         log_info(f"texture: collected UDIM {tile_num} -> {os.path.basename(target_abs)}")
     image["kitbridge_rel_path"] = f"textures/{os.path.basename(manifest_template)}"
     image["kitbridge_udim"] = True
