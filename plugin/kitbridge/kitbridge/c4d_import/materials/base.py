@@ -592,7 +592,10 @@ def build_material_plan(
             )
             if tex_op is not None:
                 has_displacement = disp_method in ("DISPLACEMENT", "BOTH")
-                displacement_as_bump = disp_method in ("BUMP", "BOTH")
+                # A baked normal map already holds this bump (exporter 9): don't add it twice.
+                displacement_as_bump = disp_method in ("BUMP", "BOTH") and not disp_entry.get(
+                    "bump_in_normal"
+                )
                 ops["displacement"] = ChannelOp(
                     channel_name="displacement",
                     kind="texture",

@@ -123,3 +123,32 @@ box did not help). The material uses Generated coordinates, Noise and a Float Cu
 Next: bake one channel twice in one Blender session; check whether the pristine copy and the
 flattened copy alternate, and whether Generated coordinates of the bake object change between runs.
 This probably also explains the "pattern direction" difference in the bench.
+
+## Run 7 (2026-11-09, exporter v9): preview sphere UVs, plane bakes, bump in the baked normal
+Root cause of the "different bake every run" issue above: the material preview sphere had no real
+UVs. `bmesh.ops.create_uvsphere(calc_uvs=True)` only fills an existing UV layer; without one the
+exporter added a default layer in which **every face covers the whole 0..1 square**. So
+(a) textures repeated on each of the 2048 faces instead of wrapping the sphere, and (b) bakes had
+all faces writing the same texels: the result was one random face's patch, different on each run
+(and the operator spent ~50 s per 2K bake resolving the overlaps). The bench hid it because the
+reference was rendered on the same broken sphere.
+Changes:
+- The sphere gets real UVs (layer verified first), scaled 3 x 1.5 so one texture tile covers about
+  1.05 m of its surface with square texels.
+- Material assets bake on a 1 m x 1 m plane (UV 0..1), not on the sphere: the texture is a flat
+  square metre of the material and suits any object. Wood Fluted Panel now bakes 10 straight
+  flutes per metre; three runs are identical to the texel.
+- While baking, the Displacement output is unlinked for value bakes; for the normal bake the
+  method is forced to BUMP so Cycles adds the displacement bump without moving vertices.
+- For material assets with displacement method BUMP/BOTH the final shading normal is always
+  baked (normal map + bump + displacement bump) and the manifest says `bump_in_normal`; the
+  importer then skips its own height bump. Any baked normal with such a method sets the flag too:
+  since run 5 the importer was adding that bump a second time.
+Results: "Wood" b76294bf 0.926 → **0.967** (ΔE 7.5 → 3.9; the baked normal gets past Redshift's
+height-bump ceiling), Wood Fluted Panel 0.885 → 0.907. Slightly lower: Wood with decorative
+carvings 0.955 → 0.947, Wood Floor Walnut 0.996 → 0.993 (new UVs put the pole elsewhere). Models
+unchanged. Median SSIM 0.987, ΔE 2.64, IoU < 0.9: 4.
+Speed: Wood Fluted Panel at 2048 converts in **12 s** (was 210 s).
+Bench caveat: procedural materials on Generated/Object coordinates (Wood Fluted Panel) are 3D in
+the Cycles reference and UV-mapped in Cinema 4D; the pattern direction differs by nature.
+The c4dpy 2024 route cannot run the bench (different Redshift/OCIO: IoU 0.01 on a control asset).

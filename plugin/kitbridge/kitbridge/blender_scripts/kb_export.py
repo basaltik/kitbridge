@@ -57,7 +57,7 @@ from kitbridge.core import shader_graph  # noqa: E402
 
 SCHEMA_VERSION = 1
 # Keep equal to pipeline.EXPORTER_VERSION; raise both when packages need converting again.
-EXPORTER_VERSION = 8  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests; 6: pristine bakes, fine normals, SSS/translucency; 7: displacement method; 8: real UDIM tiles
+EXPORTER_VERSION = 9  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests; 6: pristine bakes, fine normals, SSS/translucency; 7: displacement method; 8: real UDIM tiles; 9: sphere UVs, plane bakes, bump in baked normal
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -328,6 +328,27 @@ def _select_asset_material(asset_name: str = "", asset_id: str = "") -> Optional
     return mats[0]
 
 
+PREVIEW_SPHERE_UV_TILES = (3.0, 1.5)
+
+
+def _new_bake_plane_mesh(uv_name: str) -> Any:
+    """A 1 m x 1 m plane (XY, +Z up) whose UVs span 0..1: one texture tile per square metre."""
+    mesh = bpy.data.meshes.new("_kb_bake_plane")
+    half = 0.5
+    mesh.from_pydata(
+        [(-half, -half, 0.0), (half, -half, 0.0), (half, half, 0.0), (-half, half, 0.0)],
+        [],
+        [(0, 1, 2, 3)],
+    )
+    layer = mesh.uv_layers.new(name=uv_name)
+    for loop, uv in zip(layer.data, ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))):
+        loop.uv = uv
+    mesh.uv_layers.active = layer
+    layer.active_render = True
+    mesh.update()
+    return mesh
+
+
 def _prepare_material_sphere_scene(asset_name: str = "", asset_id: str = "") -> Any:
     """Replace scene geometry with a clean 1 m UV sphere carrying the asset material."""
     chosen = _select_asset_material(asset_name=asset_name, asset_id=asset_id)
@@ -342,6 +363,10 @@ def _prepare_material_sphere_scene(asset_name: str = "", asset_id: str = "") -> 
     mesh = bpy.data.meshes.new("PreviewSphereMesh")
     bm = bmesh.new()
     try:
+        # calc_uvs only fills an existing layer. Without one the sphere got a default layer where
+        # every face covers the whole 0..1 square: textures repeated on each face, and bakes
+        # (all faces writing the same texels) kept whichever face finished last.
+        bm.loops.layers.uv.verify()
         try:
             bmesh.ops.create_uvsphere(
                 bm,
@@ -368,6 +393,12 @@ def _prepare_material_sphere_scene(asset_name: str = "", asset_id: str = "") -> 
         mesh.uv_layers[0].name = "UVMap"
         mesh.uv_layers.active = mesh.uv_layers[0]
         mesh.uv_layers[0].active_render = True
+    # 3 x 1.5 tiles: one texture tile per ~1.05 m of the 1 m sphere's surface, square texels.
+    for loop_uv in mesh.uv_layers[0].data:
+        loop_uv.uv = (
+            loop_uv.uv[0] * PREVIEW_SPHERE_UV_TILES[0],
+            loop_uv.uv[1] * PREVIEW_SPHERE_UV_TILES[1],
+        )
 
     for poly in mesh.polygons:
         poly.use_smooth = True
@@ -1394,13 +1425,26 @@ def _bake_material_channels(
     progress_base: float,
     progress_span: float,
     pristine: Optional[Any] = None,
+    on_plane: bool = False,
 ) -> List[str]:
     """Bake all channels in ``cls.sockets_to_bake`` for *mat* using Cycles.
 
     *pristine* is an un-flattened copy of *mat*. It is baked instead whenever its surface shader
     sits at the top level, so groups are evaluated by Cycles itself rather than by our inliner.
+
+    *on_plane* (material assets) bakes on a 1 m plane instead of the preview sphere, so the
+    texture is a flat square metre of the material that suits any object. There the final shading
+    normal is also baked whenever Cycles shades the displacement as bump (methods BUMP/BOTH).
     """
-    if not cls.sockets_to_bake or not mat.use_nodes or mat.node_tree is None:
+    if not mat.use_nodes or mat.node_tree is None:
+        return []
+    channels_to_bake = list(cls.sockets_to_bake)
+    disp_as_bump = (
+        isinstance(cls.channels.get("displacement"), dict) or "displacement" in channels_to_bake
+    ) and _displacement_method(mat) in ("BUMP", "BOTH")
+    if on_plane and disp_as_bump and "normal" not in channels_to_bake:
+        channels_to_bake.append("normal")
+    if not channels_to_bake:
         return []
     bake_mat = mat
     if pristine is not None:
@@ -1425,7 +1469,7 @@ def _bake_material_channels(
 
     # Create a temporary single-material duplicate of rep_obj so multi-material slots
     # never interfere with Cycles baking and rep_obj's original slots stay untouched.
-    bake_mesh = rep_obj.data.copy()
+    bake_mesh = _new_bake_plane_mesh(uv_name) if on_plane else rep_obj.data.copy()
     bake_mesh.materials.clear()
     bake_mesh.materials.append(bake_mat)
     for poly in bake_mesh.polygons:
@@ -1435,7 +1479,8 @@ def _bake_material_channels(
         bake_mesh.uv_layers[uv_name].active_render = True
 
     bake_obj = bpy.data.objects.new(f"_kb_bake_{_safe_filename(mat.name)}", bake_mesh)
-    bake_obj.matrix_world = rep_obj.matrix_world.copy()
+    if not on_plane:
+        bake_obj.matrix_world = rep_obj.matrix_world.copy()
     scene.collection.objects.link(bake_obj)
 
     orig_rep_hide_render = rep_obj.hide_render
@@ -1463,8 +1508,8 @@ def _bake_material_channels(
         pass
 
     try:
-        total_ch = len(cls.sockets_to_bake)
-        for idx, ch_name in enumerate(cls.sockets_to_bake):
+        total_ch = len(channels_to_bake)
+        for idx, ch_name in enumerate(channels_to_bake):
             frac = progress_base + progress_span * (idx / max(1, total_ch))
             emit_progress(frac, f"Baking {mat.name}: {ch_name}")
 
@@ -1509,17 +1554,33 @@ def _bake_material_channels(
                 bake_obj.select_set(True)
                 view_layer.objects.active = bake_obj
 
-                if bake_type == "NORMAL":
-                    bpy.ops.object.bake(
-                        type="NORMAL",
-                        normal_space="TANGENT",
-                        normal_r="POS_X",
-                        normal_g="POS_Y",
-                        normal_b="POS_Z",
-                        use_clear=False,
-                    )
-                else:
-                    bpy.ops.object.bake(type="EMIT", use_clear=False)
+                # Cycles applies the Displacement output while baking. The normal bake wants its
+                # bump (never moved vertices); every other bake wants the plain surface.
+                disp_in = output_node.inputs.get("Displacement")
+                disp_sources = [l.from_socket for l in disp_in.links] if disp_in is not None else []
+                orig_method = getattr(bake_mat, "displacement_method", None)
+                try:
+                    if bake_type == "NORMAL":
+                        if disp_sources and orig_method == "BOTH":
+                            bake_mat.displacement_method = "BUMP"
+                        bpy.ops.object.bake(
+                            type="NORMAL",
+                            normal_space="TANGENT",
+                            normal_r="POS_X",
+                            normal_g="POS_Y",
+                            normal_b="POS_Z",
+                            use_clear=False,
+                        )
+                    else:
+                        for link in list(disp_in.links) if disp_in is not None else []:
+                            nt.links.remove(link)
+                        bpy.ops.object.bake(type="EMIT", use_clear=False)
+                finally:
+                    if orig_method is not None and bake_mat.displacement_method != orig_method:
+                        bake_mat.displacement_method = orig_method
+                    if disp_in is not None and not disp_in.is_linked:
+                        for src in disp_sources:
+                            nt.links.new(src, disp_in)
 
                 raw_midlevel = raw_scale = None
                 if ch_name == "displacement":
@@ -1616,6 +1677,8 @@ def _bake_material_channels(
                             "strength": 1.0,
                             "flip_green": False,
                         }
+                        # The bake is the final shading normal: it already contains the bump map.
+                        cls.channels.pop("bump", None)
                     elif ch_name == "displacement":
                         meta = cls.bake_metadata.get("displacement") or {"midlevel": 0.5, "scale": 0.05}
                         # C4D computes scale * (texel - midlevel). For normalized texels,
@@ -1691,6 +1754,11 @@ def _bake_material_channels(
             bpy.data.meshes.remove(bake_mesh, do_unlink=True)
         with contextlib.suppress(Exception):
             view_layer.objects.active = rep_obj
+
+    disp_entry = cls.channels.get("displacement")
+    if disp_as_bump and "normal" in baked_channels and isinstance(disp_entry, dict):
+        # The importer must not add the height as bump again.
+        disp_entry["bump_in_normal"] = True
 
     # When all textured channels were produced by baking, UV mapping is already baked into 0..1
     has_unbaked_tex = any(
@@ -2097,6 +2165,7 @@ def run_export(params: Dict[str, Any]) -> str:
                 progress_base=p_base,
                 progress_span=p_span,
                 pristine=pristine.get(mat.name),
+                on_plane=asset_type == "material",
             )
             translucency = _translucency_weight(mat)
             if translucency > 0.01:

@@ -238,6 +238,17 @@ def test_displacement_method_decides_geometry_and_bump(tmp_path: Path, method, m
     assert "displacement" in plan.ops
 
 
+def test_bump_already_in_baked_normal_is_not_added_again(tmp_path: Path) -> None:
+    (tmp_path / "textures").mkdir()
+    (tmp_path / "textures" / "h.png").write_bytes(b"data")
+    disp = {"texture": "textures/h.png", "colorspace": "raw", "scale": 0.075, "method": "BOTH",
+            "bump_in_normal": True}
+    plan = base.build_material_plan({"name": "m", "channels": {"displacement": disp}}, str(tmp_path))
+
+    assert plan.has_displacement is True
+    assert plan.displacement_as_bump is False
+
+
 def test_missing_texture_falls_back_to_default_with_warning(tmp_path: Path) -> None:
     mat_dict = {
         "name": "MissingTexMat",
