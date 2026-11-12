@@ -59,7 +59,7 @@ log = logging.getLogger("kitbridge")
 
 SCHEMA_VERSION = 1
 # Keep equal to kb_export.EXPORTER_VERSION. Packages without the field count as version 1.
-EXPORTER_VERSION = 9
+EXPORTER_VERSION = 10
 # Mazda MX-5 (207 MB FBX, 4.45M polygons) froze Cinema 4D for over 200 s; an 80 MB one was fine.
 HEAVY_GEOMETRY_MB = 100
 DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 600.0  # with no progress at all: a slow download keeps going

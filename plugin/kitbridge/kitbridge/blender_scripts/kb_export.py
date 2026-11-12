@@ -57,7 +57,7 @@ from kitbridge.core import shader_graph  # noqa: E402
 
 SCHEMA_VERSION = 1
 # Keep equal to pipeline.EXPORTER_VERSION; raise both when packages need converting again.
-EXPORTER_VERSION = 9  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests; 6: pristine bakes, fine normals, SSS/translucency; 7: displacement method; 8: real UDIM tiles; 9: sphere UVs, plane bakes, bump in baked normal
+EXPORTER_VERSION = 10  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests; 6: pristine bakes, fine normals, SSS/translucency; 7: displacement method; 8: real UDIM tiles; 9: sphere UVs, plane bakes, bump in baked normal; 10: bake only the material's faces (from all its objects) in an empty scene, AO/Bevel bypassed
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -1417,6 +1417,281 @@ def _wire_normal_for_bake(
     return temp_nodes, orig_from_socket
 
 
+MAX_BAKE_FACES = 1_000_000
+
+
+def _bypass_scene_dependent_nodes(
+    node_tree: Any, undo: List[Tuple[Any, Any, List[Any], Optional[Any]]], _seen: Optional[Set[int]] = None
+) -> None:
+    """Take Ambient Occlusion and Bevel nodes out of the graph (also inside groups) for a bake.
+
+    Their result belongs to one place on one object, but a texture is shared by every face that
+    uses the same UVs: baked in, an occluded face stamped black patches over visible ones. The
+    renderer shades contact itself. AO passes its Color input and a factor of 1; Bevel passes its
+    Normal input. *undo* collects what :func:`_restore_bypassed_nodes` needs.
+    """
+    seen = _seen if _seen is not None else set()
+    if node_tree is None or node_tree.as_pointer() in seen:
+        return
+    seen.add(node_tree.as_pointer())
+    for node in list(node_tree.nodes):
+        idname = node.bl_idname
+        if idname == "ShaderNodeGroup":
+            _bypass_scene_dependent_nodes(node.node_tree, undo, seen)
+            continue
+        if idname not in ("ShaderNodeAmbientOcclusion", "ShaderNodeBevel"):
+            continue
+        for out in node.outputs:
+            targets = [link.to_socket for link in out.links]
+            if not targets:
+                continue
+            for link in list(out.links):
+                node_tree.links.remove(link)
+            src: Optional[Any] = None
+            temp: Optional[Any] = None
+            if idname == "ShaderNodeAmbientOcclusion" and out.name == "Color":
+                color_in = node.inputs.get("Color")
+                if color_in is not None and color_in.is_linked:
+                    src = color_in.links[0].from_socket
+                else:
+                    temp = node_tree.nodes.new("ShaderNodeRGB")
+                    temp.outputs[0].default_value = (
+                        tuple(color_in.default_value) if color_in is not None else (1.0, 1.0, 1.0, 1.0)
+                    )
+                    src = temp.outputs[0]
+            elif idname == "ShaderNodeAmbientOcclusion":
+                temp = node_tree.nodes.new("ShaderNodeValue")
+                temp.outputs[0].default_value = 1.0
+                src = temp.outputs[0]
+            else:
+                normal_in = node.inputs.get("Normal")
+                if normal_in is not None and normal_in.is_linked:
+                    src = normal_in.links[0].from_socket
+            if src is not None:
+                for target in targets:
+                    node_tree.links.new(src, target)
+            undo.append((node_tree, out, targets, temp))
+
+
+def _restore_bypassed_nodes(undo: List[Tuple[Any, Any, List[Any], Optional[Any]]]) -> None:
+    for node_tree, out, targets, temp in reversed(undo):
+        with contextlib.suppress(Exception):
+            for target in targets:
+                node_tree.links.new(out, target)
+            if temp is not None:
+                node_tree.nodes.remove(temp)
+
+
+UV_COVERAGE_GRID = 256  # cells per side; a cell is the bake margin's width, which hides a missed one
+UV_STACK_LIMIT = 4.0  # UV area (in texture tiles) a mesh may bring before its faces are thinned
+
+
+def _uv_triangles(mesh: Any, uv_name: str) -> Tuple[Any, Any, Any]:
+    """The mesh's triangles in UV space: ``(corners [n, 3, 2], polygon index [n], area [n])``."""
+    import numpy as np  # bundled with Blender
+
+    mesh.calc_loop_triangles()
+    n_tris = len(mesh.loop_triangles)
+    tri_loops = np.empty(n_tris * 3, dtype=np.int32)
+    mesh.loop_triangles.foreach_get("loops", tri_loops)
+    tri_poly = np.empty(n_tris, dtype=np.int32)
+    mesh.loop_triangles.foreach_get("polygon_index", tri_poly)
+    uv = np.empty(len(mesh.loops) * 2, dtype=np.float32)
+    mesh.uv_layers[uv_name].data.foreach_get("uv", uv)
+    corners = np.nan_to_num(uv.reshape(-1, 2)[tri_loops].reshape(n_tris, 3, 2).astype(np.float64))
+    e1, e2 = corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]
+    area = 0.5 * np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0])
+    return corners, tri_poly, area
+
+
+_UV_SAMPLE_WEIGHTS: List[Any] = []
+UV_LARGE_TRIANGLE_CELLS = 64.0
+
+
+def _uv_sample_cells(corners: Any, tri_poly: Any, area: Any) -> Tuple[Any, Any]:
+    """The coverage-grid cells each triangle touches inside the 0..1 tile: ``(cell, polygon index)``.
+
+    Blender bakes that tile only: what lies outside neither covers nor needs texels. Bounding
+    boxes will not do: a diagonal or L-shaped face would claim texels it never touches, and other
+    objects' faces there would be left out (black in the texture). Small triangles are sampled
+    (about sixteen points per cell, so that random gaps do not make covered texels look free);
+    large ones are tested against the cell centres, which costs nothing for the part outside.
+    """
+    import numpy as np  # bundled with Blender
+
+    grid = UV_COVERAGE_GRID
+    if not _UV_SAMPLE_WEIGHTS:
+        weights = np.random.RandomState(0).rand(2**10, 2)
+        outside = weights.sum(axis=1) > 1.0
+        weights[outside] = 1.0 - weights[outside]
+        weights[0] = (1.0 / 3.0, 1.0 / 3.0)  # the first sample of every triangle is its centre
+        _UV_SAMPLE_WEIGHTS.append(weights)
+    weights = _UV_SAMPLE_WEIGHTS[0]
+    out_cells, out_polys = [], []
+
+    def add_points(pts: Any, polys: Any) -> None:
+        inside = ((pts >= 0.0) & (pts < 1.0)).all(axis=-1).ravel()
+        cell = np.clip((pts * grid).astype(np.int32), 0, grid - 1)
+        out_cells.append((cell[..., 1] * grid + cell[..., 0]).ravel()[inside])
+        out_polys.append(polys[inside])
+
+    cells_area = area * grid * grid
+    lo, hi = corners.min(axis=1), corners.max(axis=1)
+    in_tile = (hi > 0.0).all(axis=1) & (lo < 1.0).all(axis=1)
+    origin, e1, e2 = corners[:, 0], corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]
+
+    # Sample counts in powers of two, so triangles of a similar size are handled in one batch.
+    small = in_tile & (cells_area < UV_LARGE_TRIANGLE_CELLS)
+    power = np.ceil(np.log2(np.clip(cells_area * 16.0, 1.0, 2.0**10))).astype(np.int32)
+    for k in np.unique(power[small]):
+        idx = np.flatnonzero(small & (power == k))
+        w = weights[: 2 ** int(k)]
+        pts = origin[idx, None, :] + w[None, :, :1] * e1[idx, None, :] + w[None, :, 1:] * e2[idx, None, :]
+        add_points(pts, np.repeat(tri_poly[idx], len(w)))
+
+    large = np.flatnonzero(in_tile & ~small)
+    if len(large):
+        # Thin slivers may hold no cell centre: give every large triangle a few points as well.
+        w = np.array([(1 / 3, 1 / 3), (0.5, 0.0), (0.0, 0.5), (0.5, 0.5)])
+        pts = origin[large, None, :] + w[None, :, :1] * e1[large, None, :] + w[None, :, 1:] * e2[large, None, :]
+        add_points(pts, np.repeat(tri_poly[large], len(w)))
+    centres = (np.arange(grid) + 0.5) / grid
+    for i in large.tolist():
+        u0, v0 = np.clip((lo[i] * grid).astype(np.int64), 0, grid - 1)
+        u1, v1 = np.clip((hi[i] * grid).astype(np.int64), 0, grid - 1)
+        pu = centres[u0 : u1 + 1][None, :] - origin[i, 0]
+        pv = centres[v0 : v1 + 1][:, None] - origin[i, 1]
+        det = e1[i, 0] * e2[i, 1] - e1[i, 1] * e2[i, 0]
+        if det == 0.0:
+            continue
+        w1 = (pu * e2[i, 1] - pv * e2[i, 0]) / det
+        w2 = (pv * e1[i, 0] - pu * e1[i, 1]) / det
+        vv, uu = np.nonzero((w1 >= 0.0) & (w2 >= 0.0) & (w1 + w2 <= 1.0))
+        if len(vv):
+            out_cells.append(((vv + v0) * grid + (uu + u0)).astype(np.int32))
+            out_polys.append(np.full(len(vv), tri_poly[i], dtype=np.int32))
+    if not out_cells:
+        return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32)
+    return np.concatenate(out_cells), np.concatenate(out_polys)
+
+
+def _select_bake_faces(mesh: Any, uv_name: str, keep: Any, covered: Any, is_rep: bool) -> Any:
+    """Narrow *keep* (the polygons using the material) to those worth baking; updates *covered*.
+
+    A bake costs as much as the UV area of its faces, stacked layers included (21 000 railing
+    faces that each fill the texture: 16 000 layers, minutes per map). The representative mesh
+    keeps all its faces unless they stack beyond ``UV_STACK_LIMIT``; other meshes, and a mesh
+    over the limit, only give the faces that reach texels nothing covers yet.
+    """
+    import numpy as np  # bundled with Blender
+
+    corners, tri_poly, area = _uv_triangles(mesh, uv_name)
+    mine = keep[tri_poly]
+    corners, tri_poly, area = corners[mine], tri_poly[mine], area[mine]
+    total_area = float(area.sum())
+    if total_area <= UV_STACK_LIMIT:
+        cells, polys = _uv_sample_cells(corners, tri_poly, area)
+        if not is_rep:
+            fresh = np.zeros(len(keep), dtype=bool)
+            fresh[polys[~covered[cells]]] = True
+            keep = keep & fresh
+            cells = cells[keep[polys]]
+        covered[cells] = True
+        return keep
+
+    # Largest faces first, about one texture tile of UV area at a time.
+    order = np.argsort(-area, kind="stable")
+    ends = np.searchsorted(np.cumsum(area[order]), np.arange(1.0, total_area + 1.0, 1.0)) + 1
+    selected = np.zeros(len(keep), dtype=bool)
+    start = 0
+    for end in sorted(set(np.clip(ends, 1, len(order)).tolist()) | {len(order)}):
+        if covered.mean() > 0.9995:
+            break
+        chunk = order[start:end]
+        start = end
+        cells, polys = _uv_sample_cells(corners[chunk], tri_poly[chunk], area[chunk])
+        fresh = np.zeros(len(keep), dtype=bool)
+        fresh[polys[~covered[cells]]] = True
+        selected |= fresh
+        covered[cells[fresh[polys]]] = True
+    return keep & selected
+
+
+def _material_faces_mesh(objs: List[Any], rep_obj: Any, mat: Any, uv_name: str) -> Any:
+    """A new mesh holding the faces that use *mat*: *rep_obj*'s, plus other meshes' faces that
+    reach parts of the texture not covered yet.
+
+    A mesh with many materials usually gives each of them the whole UV square: baking all of its
+    faces stacked those layers on the same texels and made every bake pay for the whole mesh.
+    And the texture serves every object with the material, so texels only other objects use must
+    be baked too. Geometry is in *rep_obj*'s space.
+    """
+    import numpy as np  # bundled with Blender
+
+    rep_mesh = rep_obj.data
+    covered = np.zeros(UV_COVERAGE_GRID * UV_COVERAGE_GRID, dtype=bool)
+    bm = bmesh.new()
+    try:
+        to_rep = rep_obj.matrix_world.inverted_safe()
+        done: Set[int] = set()
+        budget = MAX_BAKE_FACES
+        for obj in [rep_obj] + [o for o in objs if o is not rep_obj]:
+            mesh = obj.data
+            if mesh.as_pointer() in done:
+                continue
+            done.add(mesh.as_pointer())
+            n_polys = len(mesh.polygons)
+            is_rep = obj is rep_obj
+            if n_polys == 0 or (not is_rep and (uv_name not in mesh.uv_layers or n_polys > budget or covered.mean() > 0.9995)):
+                continue
+            slots = [i for i, slot in enumerate(obj.material_slots) if slot.material == mat]
+            mat_index = np.empty(n_polys, dtype=np.int32)
+            mesh.polygons.foreach_get("material_index", mat_index)
+            keep = np.isin(mat_index, slots)
+            if keep.any() and uv_name in mesh.uv_layers:
+                keep = _select_bake_faces(mesh, uv_name, keep, covered, is_rep)
+            if not keep.any():
+                continue
+            first_vert, first_face = len(bm.verts), len(bm.faces)
+            bm.from_mesh(mesh)
+            new_verts = list(bm.verts)[first_vert:]
+            new_faces = list(bm.faces)[first_face:]
+            if not is_rep:
+                bmesh.ops.transform(bm, matrix=to_rep @ obj.matrix_world, verts=new_verts)
+            doomed = [face for face, kept in zip(new_faces, keep.tolist()) if not kept]
+            budget -= len(new_faces) - len(doomed)
+            if doomed:
+                bmesh.ops.delete(bm, geom=doomed, context="FACES")
+        out = bpy.data.meshes.new("_kb_bake_mesh")
+        bm.to_mesh(out)
+    finally:
+        bm.free()
+    # Generated texture coordinates come from the bounding box: keep the representative's.
+    with contextlib.suppress(Exception):
+        tex_loc, tex_size = tuple(rep_mesh.texspace_location), tuple(rep_mesh.texspace_size)
+        out.use_auto_texspace = False
+        out.texspace_location = tex_loc
+        out.texspace_size = tex_size
+    return out
+
+
+def _new_bake_scene(scene: Any) -> Any:
+    """An empty scene with *scene*'s bake settings, so a bake syncs one object, not the asset."""
+    bake_scene = bpy.data.scenes.new("_kb_bake_scene")
+    bake_scene.render.engine = "CYCLES"
+    for owner, attrs in (
+        ("cycles", ("device", "samples", "use_adaptive_sampling", "use_denoising")),
+        ("view_settings", ("view_transform", "look", "exposure", "gamma")),
+    ):
+        for attr in attrs:
+            with contextlib.suppress(Exception):
+                setattr(getattr(bake_scene, owner), attr, getattr(getattr(scene, owner), attr))
+    for attr in ("use_clear", "use_selected_to_active", "margin", "target", "margin_type"):
+        with contextlib.suppress(Exception):
+            setattr(bake_scene.render.bake, attr, getattr(scene.render.bake, attr))
+    return bake_scene
+
+
 def _bake_material_channels(
     mat: Any,
     cls: shader_graph.MaterialClassification,
@@ -1453,6 +1728,15 @@ def _bake_material_channels(
         if p_surf is not None and p_surf.is_linked and p_surf.links[0].from_node.bl_idname != "ShaderNodeGroup":
             bake_mat = pristine
 
+    nt = bake_mat.node_tree
+    output_node = _find_active_material_output(nt)
+    if output_node is None:
+        return []
+    surf_in = output_node.inputs.get("Surface")
+    surf_node = surf_in.links[0].from_node if (surf_in and surf_in.is_linked) else None
+    if surf_node is None:
+        return []
+
     scene = bpy.context.scene
     view_layer = bpy.context.view_layer
     objs = _objects_using_material(scene, mat)
@@ -1469,11 +1753,17 @@ def _bake_material_channels(
 
     # Create a temporary single-material duplicate of rep_obj so multi-material slots
     # never interfere with Cycles baking and rep_obj's original slots stay untouched.
-    bake_mesh = _new_bake_plane_mesh(uv_name) if on_plane else rep_obj.data.copy()
+    bake_mesh = (
+        _new_bake_plane_mesh(uv_name) if on_plane else _material_faces_mesh(objs, rep_obj, mat, uv_name)
+    )
+    if len(bake_mesh.polygons) == 0:
+        # A slot nobody's faces use (left-over material): nothing to bake, nothing to show.
+        bpy.data.meshes.remove(bake_mesh)
+        log_info(f"bake: skipping {mat.name!r} (no faces use it)")
+        return []
     bake_mesh.materials.clear()
     bake_mesh.materials.append(bake_mat)
-    for poly in bake_mesh.polygons:
-        poly.material_index = 0
+    bake_mesh.polygons.foreach_set("material_index", [0] * len(bake_mesh.polygons))
     if uv_name in bake_mesh.uv_layers:
         bake_mesh.uv_layers.active = bake_mesh.uv_layers[uv_name]
         bake_mesh.uv_layers[uv_name].active_render = True
@@ -1481,21 +1771,21 @@ def _bake_material_channels(
     bake_obj = bpy.data.objects.new(f"_kb_bake_{_safe_filename(mat.name)}", bake_mesh)
     if not on_plane:
         bake_obj.matrix_world = rep_obj.matrix_world.copy()
-    scene.collection.objects.link(bake_obj)
+    # Every bake syncs its whole scene to Cycles: bake in an empty one.
+    window = bpy.context.window
+    bake_scene: Optional[Any] = None
+    bypassed: List[Tuple[Any, Any, List[Any], Optional[Any]]] = []
+    _bypass_scene_dependent_nodes(bake_mat.node_tree, bypassed)
+    if window is not None:
+        with contextlib.suppress(Exception):
+            bake_scene = _new_bake_scene(scene)
+            window.scene = bake_scene
+    (bake_scene or scene).collection.objects.link(bake_obj)
 
     orig_rep_hide_render = rep_obj.hide_render
     orig_rep_hide_vp = rep_obj.hide_viewport
     rep_obj.hide_render = True
     rep_obj.hide_viewport = True
-
-    nt = bake_mat.node_tree
-    output_node = _find_active_material_output(nt)
-    if output_node is None:
-        return []
-    surf_in = output_node.inputs.get("Surface")
-    surf_node = surf_in.links[0].from_node if (surf_in and surf_in.is_linked) else None
-    if surf_node is None:
-        return []
 
     baked_channels: List[str] = []
     tex_dir = os.path.join(output_dir, "textures")
@@ -1552,7 +1842,7 @@ def _bake_material_channels(
 
                 bpy.ops.object.select_all(action="DESELECT")
                 bake_obj.select_set(True)
-                view_layer.objects.active = bake_obj
+                bpy.context.view_layer.objects.active = bake_obj
 
                 # Cycles applies the Displacement output while baking. The normal bake wants its
                 # bump (never moved vertices); every other bake wants the plain surface.
@@ -1746,12 +2036,19 @@ def _bake_material_channels(
                 with contextlib.suppress(Exception):
                     bpy.data.images.remove(bake_img)
     finally:
+        _restore_bypassed_nodes(bypassed)
+        if bake_scene is not None:
+            with contextlib.suppress(Exception):
+                window.scene = scene
         rep_obj.hide_render = orig_rep_hide_render
         rep_obj.hide_viewport = orig_rep_hide_vp
         with contextlib.suppress(Exception):
             bpy.data.objects.remove(bake_obj, do_unlink=True)
         with contextlib.suppress(Exception):
             bpy.data.meshes.remove(bake_mesh, do_unlink=True)
+        if bake_scene is not None:
+            with contextlib.suppress(Exception):
+                bpy.data.scenes.remove(bake_scene)
         with contextlib.suppress(Exception):
             view_layer.objects.active = rep_obj
 

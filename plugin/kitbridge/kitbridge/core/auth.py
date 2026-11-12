@@ -42,7 +42,7 @@ log = logging.getLogger("kitbridge")
 
 # BlenderKit's public OAuth2 application client_id (shared by the Blender/Maya/Rhino add-ons
 # and hardcoded in bk_client/client/constants.go).
-# NOTE: Ask BlenderKit for a dedicated Kitbridge client_id before public release.
+# A dedicated Kitbridge client_id has been requested from BlenderKit; swap it in here once issued.
 CLIENT_ID = "IdFRwa3SGA8eMpzhRVFMg5Ts8sPK93xBjif93x0F"
 
 TOKEN_SECRET_KEY = "tokens"

@@ -152,3 +152,26 @@ Speed: Wood Fluted Panel at 2048 converts in **12 s** (was 210 s).
 Bench caveat: procedural materials on Generated/Object coordinates (Wood Fluted Panel) are 3D in
 the Cycles reference and UV-mapped in Cinema 4D; the pattern direction differs by nature.
 The c4dpy 2024 route cannot run the bench (different Redshift/OCIO: IoU 0.01 on a control asset).
+
+## Run 8 (2026-11-12, exporter v10): bake only what the material covers
+Profiling model conversions at 2048 showed the time was not in Cycles but in how much was baked:
+- Bosch range: one 167k-face mesh with 25 materials, each using the whole UV square. Every bake
+  rasterised the whole mesh, so other materials' faces overwrote this material's texels (the
+  "AO-driven colour" blamed in earlier runs was mostly this) and each map cost ~5 s.
+- A bake costs as much as the UV area of its faces, stacked layers included. "Metal" on the
+  Multi-Story Building: 21 000 railing faces that each fill the texture = 16 000 layers.
+- Every bake also synced the whole scene to Cycles.
+Changes:
+- The bake mesh holds only the faces that use the material: all of the representative object's,
+  plus faces of other objects that reach texels nothing covers yet (coverage on a 256 x 256 grid;
+  only the 0..1 tile counts, Blender bakes nothing outside it). A mesh stacked beyond 4 tiles of
+  UV area is thinned the same way, largest faces first, stopping once the tile is covered.
+- Bakes run in a temporary empty scene.
+- Ambient Occlusion and Bevel nodes are bypassed while baking (AO passes its colour and a factor
+  of 1): their result belongs to one spot on one object, and stacked UVs stamped black patches.
+- Material slots no face uses are skipped.
+Results: Bosch 0.764 -> **0.945** (dE 6.2 -> 3.2), Multi-Story Building 0.948 -> **0.984**
+(dE 3.3 -> 1.6; its base was partly black before, the texture only covered the largest object).
+Others unchanged. Median SSIM 0.987, dE 2.64 -> **1.88**, IoU < 0.9: 4.
+Speed at 2048: Bosch 282 s -> 56 s, Nissan Skyline 49 s -> 36 s; `dev/bench/reconvert.py`
+reconverts the bench.
