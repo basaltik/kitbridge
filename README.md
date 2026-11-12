@@ -11,8 +11,22 @@ Blender running in the background and builds native Redshift or Arnold materials
 > BlenderKit, Maxon or the Blender Foundation. Assets keep their BlenderKit license — see
 > [Asset usage](#asset-usage).
 
+![The same assets rendered in Blender and, after Kitbridge, in Cinema 4D](docs/img/fidelity.png)
+
+*The same BlenderKit assets under the same light: Blender's own render on the left, the Kitbridge
+import rendered by Redshift on the right.*
+
 **Status:** early public release. It works, it is tested, and it still has rough edges — see
 [Known limitations](#known-limitations). Bug reports are welcome.
+
+## Why
+
+BlenderKit is one of the largest asset libraries around, with tens of thousands of free models,
+materials and HDRIs — but its assets are `.blend` files with Cycles shader networks, and its
+add-ons exist for Blender, Maya and Rhino only. Getting one asset into Cinema 4D by hand means
+opening Blender, exporting FBX, and rebuilding every material node by node. Kitbridge does that
+whole trip for you in one click and keeps as much of the original look as the target renderer
+allows.
 
 ## What it does
 
@@ -20,7 +34,8 @@ Blender running in the background and builds native Redshift or Arnold materials
   your BlenderKit account.
 - Paste an `asset_base_id:…` code copied from an asset's page on blenderkit.com to jump straight
   to it.
-- Import at 512, 1K, 2K or 4K texture resolution; downloads are cached, so an asset converts once.
+- Import at 512, 1K, 2K, 4K, 8K or original texture resolution; downloads are cached, so an asset
+  converts once.
 - Materials are rebuilt as node materials for **Redshift** or **Arnold**. If neither is installed,
   Kitbridge falls back to Standard materials.
 - Shader networks that have no direct counterpart (procedural textures, mixed shaders, layered
@@ -28,12 +43,41 @@ Blender running in the background and builds native Redshift or Arnold materials
 - Displacement, bump, normal maps, UDIM tiles, subsurface, translucency, emission and lights are
   carried over.
 
+## How it works
+
+1. **Search and download** go through BlenderKit's own background client (`bk_client`), the same
+   one their Blender add-on uses, with your BlenderKit login.
+2. **Conversion** runs your Blender without a window. A script applies modifiers, reads every
+   material's node tree and sorts each channel into one of three cases: a plain value, an image
+   texture that can be reused as is, or something only Cycles can evaluate. The last group is
+   baked to textures. Geometry goes out as FBX, and everything Kitbridge learned about the
+   materials goes into a manifest next to it.
+3. **Import** loads the FBX into the open Cinema 4D document and builds node materials for the
+   renderer in use from the manifest: base colour, metalness, roughness, normal and bump,
+   displacement, transmission, subsurface, emission, opacity.
+
+The converted package is cached, so the same asset imports instantly the next time. When a newer
+Kitbridge converts better, cached assets are converted again by themselves on their next import.
+
+## Using it
+
+- Open **Kitbridge** from the main menu bar and log in (the button opens blenderkit.com in your
+  browser). Search works without logging in; downloading needs an account.
+- Pick **Models**, **Materials** or **HDRIs**, type what you need, click a thumbnail. Progress is
+  shown on the thumbnail: download, conversion, import.
+- Right-click a thumbnail for *Import*, *Open on blenderkit.com* and *Remove from cache*.
+- The **Downloaded** tab lists what is already on disk and works offline.
+- The gear opens the settings: texture resolution, which renderer to build materials for
+  (follows the document by default), the download folder, the Blender Kitbridge found, and the log.
+- An HDRI becomes a dome light for the current renderer.
+
 ## Requirements
 
 - **Windows 10 or 11.** The code is written to be portable, but macOS and Linux are untested and
   there is no installer for them yet.
-- **Cinema 4D 2023 or newer.** Tested on 2024 and 2027; reports from 2023, 2025 and 2026 are
-  welcome.
+- **Cinema 4D 2023 or newer.** This version is tested on 2024 and 2027. Earlier builds also ran
+  on 2023; reports from 2023, 2025 and 2026 are welcome.
+- **Redshift or Arnold** for full-quality materials. Arnold has had less testing than Redshift.
 - **Blender 4.2 or newer**, installed anywhere (blender.org installer, Steam, …). Kitbridge finds
   it by itself and only ever starts it in the background; you can also point to it in the plugin
   settings.
@@ -65,6 +109,30 @@ Downloaded and converted assets live in `%USERPROFILE%\blenderkit_data\kitbridge
 - Rigs, animation, particles, hair and geometry-nodes setups that cannot be applied are not
   transferred. Scenes, brushes and add-ons from BlenderKit are not supported.
 - The first import of a heavy asset can take a minute or two while Blender converts it.
+
+## Troubleshooting
+
+- **"Blender not found".** Install Blender 4.2 or newer, or set its path in the Kitbridge
+  settings.
+- **An import fails or looks wrong.** The log is at
+  `%USERPROFILE%\blenderkit_data\kitbridge\kitbridge.log` (also reachable from the settings).
+  Please attach it to a bug report together with the asset's link on blenderkit.com and your
+  Cinema 4D and renderer versions.
+- **A material looks different from the BlenderKit preview.** Previews are rendered in Cycles
+  with BlenderKit's own lighting. Compare under the same HDRI before judging; if it still differs,
+  that is worth an issue.
+- **The first import of an asset is slow.** Blender starts, converts and bakes; a model with
+  dozens of procedural materials at 2K takes about a minute on a recent GPU. Lower resolutions
+  bake faster.
+
+## Roadmap
+
+- macOS support and an installer for it.
+- Light fixtures: a real light where an emitter sits behind glass.
+- An Arnold pass over the benchmark, and Octane / V-Ray materials if there is interest.
+- Scenes and brushes from BlenderKit.
+
+Ideas and bug reports go to [Issues](../../issues); pull requests are welcome.
 
 ## Asset usage
 
