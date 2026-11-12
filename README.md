@@ -11,6 +11,8 @@ Blender running in the background and builds native Redshift or Arnold materials
 > BlenderKit, Maxon or the Blender Foundation. Assets keep their BlenderKit license — see
 > [Asset usage](#asset-usage).
 
+![Kitbridge inside Cinema 4D: models, materials, HDRIs and settings](docs/img/ui.png)
+
 ![The same assets rendered in Blender and, after Kitbridge, in Cinema 4D](docs/img/fidelity.png)
 
 *The same BlenderKit assets under the same light: Blender's own render on the left, the Kitbridge

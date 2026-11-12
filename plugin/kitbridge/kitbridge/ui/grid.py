@@ -55,6 +55,9 @@ class AssetGrid(c4d.gui.GeUserArea):
 
     def set_items(self, items: List[Dict[str, Any]]) -> None:
         self.items = items
+        # Forget thumbnails that were not on disk (or half-written) yet, so they are tried again:
+        # a failed load used to stay blank until the window was reopened.
+        self._bitmaps = {p: b for p, b in self._bitmaps.items() if b is not None}
         self._relayout()
         self.Redraw()
 
