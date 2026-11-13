@@ -926,3 +926,172 @@ def test_geometry_size_mb(chosen_folder):
         fh.truncate(3 * 1024 * 1024)
     assert pipeline.geometry_size_mb(str(pkg)) == 3
     assert pipeline.geometry_size_mb(str(chosen_folder / "nothing")) == 0
+
+
+def test_classifier_subsurface_scattering_and_identity_color_passthrough_and_udim() -> None:
+    sss = GraphNode("ShaderNodeSubsurfaceScattering", name="Subsurface Scattering")
+    sss.set_input("Roughness", 0.35)
+    sss.set_input("IOR", 1.4)
+    sss.set_input("Scale", 0.01)
+
+    img_col = GraphNode(
+        "TEX_IMAGE",
+        name="SkinCol",
+        properties={"image": "textures/skin_col.<UDIM>.png"},
+    )
+    hsv_noop = GraphNode("ShaderNodeHueSaturation", name="Hue/Saturation/Value")
+    hsv_noop.set_input("Hue", 0.5)
+    hsv_noop.set_input("Saturation", 1.0)
+    hsv_noop.set_input("Value", 1.0)
+    hsv_noop.set_input("Fac", 1.0)
+    hsv_noop.connect("Color", img_col, "Color")
+    sss.connect("Color", hsv_noop, "Color")
+
+    img_nrm = GraphNode(
+        "TEX_IMAGE",
+        name="SkinNrm",
+        properties={"image": "textures/skin_nrm.<UDIM>.png"},
+    )
+    nrm_node = GraphNode("ShaderNodeNormalMap", name="Normal Map")
+    nrm_node.set_input("Strength", 1.0)
+    nrm_node.connect("Color", img_nrm, "Color")
+    sss.connect("Normal", nrm_node, "Normal")
+
+    out = GraphNode("ShaderNodeOutputMaterial", name="Material Output")
+    out.connect("Surface", sss, "BSSRDF")
+
+    res = classify_material_output(out)
+    assert res.sockets_to_bake == []
+    assert res.channels["base_color"] == {
+        "texture": "textures/skin_col.<UDIM>.png",
+        "colorspace": "srgb",
+        "channel": "rgb",
+        "udim": True,
+    }
+    assert res.channels["normal"] == {
+        "texture": "textures/skin_nrm.<UDIM>.png",
+        "colorspace": "raw",
+        "strength": 1.0,
+        "flip_green": False,
+        "udim": True,
+    }
+    assert res.channels["subsurface"] == {"value": 1.0, "scale": 0.01}
+    assert res.channels["roughness"] == {"value": 0.35}
+    assert res.channels["ior"] == {"value": 1.4}
+
+
+def test_classifier_direct_image_on_material_output_surface() -> None:
+    img = GraphNode("ShaderNodeTexImage", name="ReflektorTex", properties={"image": "textures/reflektor.jpg"})
+    out = GraphNode("ShaderNodeOutputMaterial", name="Material Output")
+    out.connect("Surface", img, "Color")
+
+    res = classify_material_output(out)
+    assert res.sockets_to_bake == []
+    assert res.channels["base_color"] == {
+        "texture": "textures/reflektor.jpg",
+        "colorspace": "srgb",
+        "channel": "rgb",
+    }
+    assert res.channels["metallic"] == {"value": 0.0}
+    assert res.channels["roughness"] == {"value": 0.5}
+
+
+def test_classifier_view_angle_fresnel_glass_patterns() -> None:
+    transp = GraphNode("ShaderNodeBsdfTransparent", name="Transparent BSDF")
+    transp.set_input("Color", [1.0, 1.0, 1.0, 1.0])
+    aniso = GraphNode("ShaderNodeBsdfAnisotropic", name="Anisotropic BSDF")
+    aniso.set_input("Color", [0.04, 0.04, 0.04, 1.0])
+    aniso.set_input("Roughness", 0.0)
+
+    lw = GraphNode("ShaderNodeLayerWeight", name="Layer Weight")
+    lw.set_input("Blend", 0.5)
+    ramp = GraphNode("ShaderNodeValToRGB", name="Color Ramp")
+    ramp.connect("Fac", lw, "Facing")
+
+    mix = GraphNode("ShaderNodeMixShader", name="Mix Shader")
+    mix.connect("Fac", ramp, "Color")
+    mix.connect("Shader", transp, "BSDF")
+    mix.connect("Shader_001", aniso, "BSDF")
+    out = GraphNode("ShaderNodeOutputMaterial", name="Material Output")
+    out.connect("Surface", mix, "Shader")
+
+    res = classify_material_output(out)
+    assert res.sockets_to_bake == []
+    assert res.blend_method == "blend"
+    assert res.channels["transmission"] == {"value": 1.0}
+    assert res.channels["metallic"] == {"value": 0.0}
+    assert res.channels["base_color"] == {"value": [1.0, 1.0, 1.0]}
+    assert "alpha" not in res.channels
+
+    # Sclera_Mat pattern: Mix Shader(Transparent BSDF, Glass BSDF, Fac=ColorRamp(Fresnel))
+    glass = GraphNode("ShaderNodeBsdfGlass", name="Glass BSDF")
+    glass.set_input("Color", [1.0, 1.0, 1.0, 1.0])
+    glass.set_input("Roughness", 0.05)
+    glass.set_input("IOR", 1.4)
+    fresnel = GraphNode("ShaderNodeFresnel", name="Fresnel")
+    fresnel.set_input("IOR", 1.4)
+    ramp2 = GraphNode("ShaderNodeValToRGB", name="Color Ramp")
+    ramp2.connect("Fac", fresnel, "Fac")
+    mix2 = GraphNode("ShaderNodeMixShader", name="Mix Shader")
+    mix2.connect("Fac", ramp2, "Color")
+    mix2.connect("Shader", transp, "BSDF")
+    mix2.connect("Shader_001", glass, "BSDF")
+    out2 = GraphNode("ShaderNodeOutputMaterial", name="Material Output")
+    out2.connect("Surface", mix2, "Shader")
+
+    res2 = classify_material_output(out2)
+    assert res2.sockets_to_bake == []
+    assert res2.blend_method == "blend"
+    assert res2.channels["transmission"] == {"value": 1.0}
+    assert "alpha" not in res2.channels
+
+
+def test_classifier_mix_shader_leaf_inspection_skips_unlinked_normal_and_preserves_transmission() -> None:
+    # 1. Two Principled BSDFs with unlinked Normal and identical constant Metallic=0.0
+    b1 = GraphNode("ShaderNodeBsdfPrincipled", name="P1")
+    b1.set_input("Base Color", [0.8, 0.1, 0.1, 1.0])
+    b1.set_input("Metallic", 0.0)
+    b1.set_input("Roughness", 0.2)
+    b1.set_input("Normal", [0.0, 0.0, 0.0])
+
+    b2 = GraphNode("ShaderNodeBsdfPrincipled", name="P2")
+    b2.set_input("Base Color", [0.1, 0.1, 0.8, 1.0])
+    b2.set_input("Metallic", 0.0)
+    b2.set_input("Roughness", 0.7)
+    b2.set_input("Normal", [0.0, 0.0, 0.0])
+
+    mix = GraphNode("ShaderNodeMixShader", name="Mix Shader")
+    mix.connect("Shader", b1, "BSDF")
+    mix.connect("Shader_001", b2, "BSDF")
+    out = GraphNode("ShaderNodeOutputMaterial", name="Material Output")
+    out.connect("Surface", mix, "Shader")
+
+    res = classify_material_output(out)
+    assert res.sockets_to_bake == ["base_color", "roughness"]
+    assert res.channels["metallic"] == {"value": 0.0}
+    assert "normal" not in res.sockets_to_bake
+
+    # 2. Perfume Bottle pattern: Metallic BSDF mixed with MixShader(Glass BSDF, Glossy BSDF)
+    metal = GraphNode("ShaderNodeBsdfMetallic", name="Metallic BSDF")
+    metal.set_input("Base Color", [0.8, 0.6, 0.5, 1.0])
+    metal.set_input("Roughness", 0.3)
+    glass = GraphNode("ShaderNodeBsdfGlass", name="Glass BSDF")
+    glass.set_input("Color", [1.0, 1.0, 1.0, 1.0])
+    glass.set_input("Roughness", 0.0)
+    glossy = GraphNode("ShaderNodeBsdfGlossy", name="Glossy BSDF")
+    glossy.set_input("Color", [1.0, 1.0, 1.0, 1.0])
+    glossy.set_input("Roughness", 0.0)
+
+    inner_mix = GraphNode("ShaderNodeMixShader", name="Inner Mix")
+    inner_mix.connect("Shader", glass, "BSDF")
+    inner_mix.connect("Shader_001", glossy, "BSDF")
+    outer_mix = GraphNode("ShaderNodeMixShader", name="Outer Mix")
+    outer_mix.connect("Shader", metal, "BSDF")
+    outer_mix.connect("Shader_001", inner_mix, "Shader")
+    out_bottle = GraphNode("ShaderNodeOutputMaterial", name="Material Output")
+    out_bottle.connect("Surface", outer_mix, "Shader")
+
+    res_bottle = classify_material_output(out_bottle)
+    assert "transmission" in res_bottle.sockets_to_bake
+    assert res_bottle.blend_method == "blend"
+
