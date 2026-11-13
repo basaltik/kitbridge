@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -219,6 +220,17 @@ def _configure_fbx_importer(meters_per_unit: float = 1.0) -> Tuple[Any, Dict[Any
         )
         _save_and_set(p, False)
 
+    # 3b. FBX subdivision -> Subdivision Surface generator (with an SDS Weight tag for creases).
+    sds_param = compat.resolve_description_param(
+        imexporter,
+        context="fbx.import.sds",
+        idents=("FBXIMPORT_SDS",),
+        names=("Subdivision Surface",),
+        fallback_c4d_symbols=("FBXIMPORT_SDS",),
+        prefer_dtypes=(dtype_bool,),
+    )
+    _save_and_set(sds_param, True)
+
     # 4. Normals ON (both boolean group toggle if present and mode dropdown -> Normal Tags)
     norm_bool_param = compat.resolve_description_param(
         imexporter,
@@ -365,6 +377,154 @@ def _bake_object_scale(root: Any) -> None:
             obj.SetAllPoints([point * sx for point in obj.GetAllPoints()])
             obj.Message(c4d.MSG_UPDATE)
         obj.SetMg(c4d.Matrix(mg.off, mg.v1 / sx, mg.v2 / sy, mg.v3 / sz))
+
+
+# Blender's Subdivision Surface settings -> Cinema 4D's OpenSubdiv ones.
+_UV_SMOOTH_TO_FVAR = {
+    "SMOOTH_ALL": "SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD_NONE",
+    "PRESERVE_BOUNDARIES": "SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD_BOUNDARIES",
+    "PRESERVE_CORNERS": "SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD_CORNERSONLY",
+    "PRESERVE_CORNERS_AND_JUNCTIONS": "SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD_CORNERSONLY",
+    "PRESERVE_CORNERS_JUNCTIONS_AND_CONCAVE": "SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD_CORNERSONLY",
+    "NONE": "SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD_ALL",
+}
+_BOUNDARY_TO_OSD = {
+    "ALL": "SDSOBJECT_OSD_BOUNDARY_METHOD_EDGEONLY",
+    "PRESERVE_CORNERS": "SDSOBJECT_OSD_BOUNDARY_METHOD_EDGEANDCORNER",
+}
+
+
+def subdivision_settings(info: Dict[str, Any]) -> Dict[str, Any]:
+    """Cinema 4D parameter names and values for a manifest ``subdivision`` entry."""
+    levels = max(0, min(6, int(info.get("levels") or 0)))
+    raw_render = info.get("render_levels")
+    render_levels = levels if raw_render is None else max(0, min(6, int(raw_render)))
+    return {
+        "SDSOBJECT_TYPE": "SDSOBJECT_TYPE_OSD_CATMARK",
+        "SDSOBJECT_SUBEDITOR_CM": levels,
+        "SDSOBJECT_SUBRAY_CM": render_levels,
+        "SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD": _UV_SMOOTH_TO_FVAR.get(
+            str(info.get("uv_smooth") or ""), "SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD_BOUNDARIES"
+        ),
+        "SDSOBJECT_OSD_BOUNDARY_METHOD": _BOUNDARY_TO_OSD.get(
+            str(info.get("boundary_smooth") or ""), "SDSOBJECT_OSD_BOUNDARY_METHOD_EDGEONLY"
+        ),
+    }
+
+
+def _configure_subdivision(sds: Any, obj: Any, info: Dict[str, Any]) -> None:
+    """Match a Subdivision Surface generator to Blender's modifier; name it after its object."""
+    for param, value in subdivision_settings(info).items():
+        pid = getattr(c4d, param, None)
+        val = getattr(c4d, value, None) if isinstance(value, str) else value
+        if pid is None or val is None:
+            continue
+        try:
+            sds[pid] = val
+        except Exception as exc:
+            log.debug("Subdivision Surface: %s not set: %s", param, exc)
+    sds.SetName(obj.GetName())
+    # The cage's normal tag does not describe the subdivided surface; let Phong smooth it.
+    normal_tag_type = getattr(c4d, "Tnormal", 5711)
+    phong_type = getattr(c4d, "Tphong", 5612)
+    for tag in list(obj.GetTags()):
+        if tag.CheckType(normal_tag_type):
+            tag.Remove()
+    if info.get("smooth", True):
+        phong = obj.GetTag(phong_type) or obj.MakeTag(phong_type)
+        if phong is not None:
+            angle = info.get("smooth_angle")
+            try:
+                phong[c4d.PHONGTAG_PHONG_ANGLELIMIT] = angle is not None
+                if angle is not None:
+                    phong[c4d.PHONGTAG_PHONG_ANGLE] = math.radians(float(angle))
+            except Exception:
+                pass
+
+
+def _wrap_in_subdivision(obj: Any, info: Dict[str, Any]) -> Optional[Any]:
+    """Put *obj* under a Subdivision Surface generator at its place in the hierarchy.
+
+    Fallback for when the FBX importer did not make one itself.
+    """
+    sds = c4d.BaseObject(getattr(c4d, "Osds", 1007455))
+    if sds is None:
+        return None
+    _configure_subdivision(sds, obj, info)
+    # A generator subdivides all its children: the object's own children stay outside.
+    children = []
+    child = obj.GetDown()
+    while child is not None:
+        children.append((child, child.GetMg()))
+        child = child.GetNext()
+    mg = obj.GetMg()
+    sds.InsertBefore(obj)
+    sds.SetMg(mg)
+    obj.Remove()
+    obj.InsertUnder(sds)
+    obj.SetMl(c4d.Matrix())
+    previous = sds
+    for child, child_mg in children:
+        child.Remove()
+        child.InsertAfter(previous)
+        child.SetMg(child_mg)
+        previous = child
+    return sds
+
+
+def _unwrap(generator: Any) -> None:
+    """Replace *generator* by its children, keeping their world placement."""
+    children = []
+    child = generator.GetDown()
+    while child is not None:
+        children.append((child, child.GetMg()))
+        child = child.GetNext()
+    for child, mg in children:
+        child.Remove()
+        child.InsertBefore(generator)
+        child.SetMg(mg)
+    generator.Remove()
+
+
+def _settle_subdivision(temp_doc: Any, subdivided: Dict[str, Dict[str, Any]], warnings: List[str]) -> None:
+    """Leave exactly one Subdivision Surface on each object Blender subdivided, none elsewhere.
+
+    With its Subdivision Surface option on, Cinema 4D's FBX importer wraps every mesh in a
+    generator, subdivided or not; objects Blender subdivided get theirs set up to match.
+    """
+    polygon_type = getattr(c4d, "Opolygon", 5100)
+    sds_type = getattr(c4d, "Osds", 1007455)
+    weight_tag_type = getattr(c4d, "Tsds", 1007579)
+    for obj in _iter_hierarchy(temp_doc.GetFirstObject()):
+        if not obj.CheckType(polygon_type):
+            continue
+        # Generators that hold only this object (C4D objects compare with ==, not "is").
+        chain = []
+        inner = obj
+        parent = obj.GetUp()
+        while (
+            parent is not None and parent.CheckType(sds_type)
+            and parent.GetDown() == inner and inner.GetNext() is None
+        ):
+            chain.append(parent)
+            inner = parent
+            parent = parent.GetUp()
+        info = subdivided.get(str(obj.GetName() or ""))
+        try:
+            keep = chain[0] if (info is not None and chain) else None
+            for generator in chain:
+                if generator != keep:
+                    _unwrap(generator)
+            if info is None:
+                for tag in list(obj.GetTags()):
+                    if tag.CheckType(weight_tag_type):
+                        tag.Remove()
+            elif keep is not None:
+                _configure_subdivision(keep, obj, info)
+            else:
+                _wrap_in_subdivision(obj, info)
+        except Exception as exc:
+            warnings.append(f"Subdivision Surface on '{obj.GetName()}': {exc}")
 
 
 def _loose_material_name(name: str) -> str:
@@ -541,6 +701,13 @@ def import_geometry(
                 _bake_object_scale(top_obj)
             except Exception as exc:
                 outcome.warnings.append(f"Could not bake the object scale: {exc}")
+
+        subdivided = {
+            str(entry.get("name")): entry["subdivision"]
+            for entry in manifest.get("objects") or []
+            if isinstance(entry, dict) and isinstance(entry.get("subdivision"), dict)
+        }
+        _settle_subdivision(temp_doc, subdivided, outcome.warnings)
 
         top_level_objs: List[Any] = []
         cur = temp_doc.GetFirstObject()

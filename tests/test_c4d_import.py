@@ -458,3 +458,23 @@ def test_translucency_reaches_the_plan():
     assert plan.ops["translucency"].value == pytest.approx(0.5)
     assert not plan.has_transmission
 
+
+
+def test_subdivision_settings_follow_blender():
+    from kitbridge.c4d_import.geometry import subdivision_settings
+
+    default = subdivision_settings({"levels": 2, "render_levels": 3})
+    assert default["SDSOBJECT_TYPE"] == "SDSOBJECT_TYPE_OSD_CATMARK"
+    assert default["SDSOBJECT_SUBEDITOR_CM"] == 2
+    assert default["SDSOBJECT_SUBRAY_CM"] == 3
+    assert default["SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD"] == "SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD_BOUNDARIES"
+    assert default["SDSOBJECT_OSD_BOUNDARY_METHOD"] == "SDSOBJECT_OSD_BOUNDARY_METHOD_EDGEONLY"
+
+    custom = subdivision_settings(
+        {"levels": 9, "render_levels": 0, "uv_smooth": "SMOOTH_ALL", "boundary_smooth": "PRESERVE_CORNERS"}
+    )
+    assert custom["SDSOBJECT_SUBEDITOR_CM"] == 6  # clamped
+    assert custom["SDSOBJECT_SUBRAY_CM"] == 0  # Blender renders this one without subdivision
+    assert subdivision_settings({"levels": 1})["SDSOBJECT_SUBRAY_CM"] == 1
+    assert custom["SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD"] == "SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD_NONE"
+    assert custom["SDSOBJECT_OSD_BOUNDARY_METHOD"] == "SDSOBJECT_OSD_BOUNDARY_METHOD_EDGEANDCORNER"

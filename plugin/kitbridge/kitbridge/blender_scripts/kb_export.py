@@ -57,7 +57,7 @@ from kitbridge.core import shader_graph  # noqa: E402
 
 SCHEMA_VERSION = 1
 # Keep equal to pipeline.EXPORTER_VERSION; raise both when packages need converting again.
-EXPORTER_VERSION = 10  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests; 6: pristine bakes, fine normals, SSS/translucency; 7: displacement method; 8: real UDIM tiles; 9: sphere UVs, plane bakes, bump in baked normal; 10: bake only the material's faces (from all its objects) in an empty scene, AO/Bevel bypassed
+EXPORTER_VERSION = 11  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests; 6: pristine bakes, fine normals, SSS/translucency; 7: displacement method; 8: real UDIM tiles; 9: sphere UVs, plane bakes, bump in baked normal; 10: bake only the material's faces (from all its objects) in an empty scene, AO/Bevel bypassed; 11: Subdivision Surface kept live
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -189,6 +189,113 @@ def _realize_collection_instances(scene: Any, view_layer: Any) -> None:
             log_info(f"duplicates_make_real failed on {obj.name!r}: {exc}")
 
 
+SUBDIVISION_PROP = "_kb_subdivision"
+
+
+def _mesh_has_creases(mesh: Any) -> bool:
+    """True when any edge or vertex carries a subdivision crease (Cinema 4D would need weight tags)."""
+    for attr_name in ("crease_edge", "crease_vert"):
+        attr = mesh.attributes.get(attr_name) if hasattr(mesh, "attributes") else None
+        if attr is None or len(attr.data) == 0:
+            continue
+        try:
+            import numpy as np  # bundled with Blender
+
+            values = np.empty(len(attr.data), dtype=np.float32)
+            attr.data.foreach_get("value", values)
+            if float(values.max()) > 0.0:
+                return True
+        except Exception:
+            return True
+    return False
+
+
+_SMOOTH_BY_ANGLE_GROUPS = ("Smooth by Angle", "Auto Smooth")
+
+
+def _smooth_by_angle(mod: Any) -> Optional[float]:
+    """The angle (radians) of a "Smooth by Angle" / legacy "Auto Smooth" node modifier, else None."""
+    group = getattr(mod, "node_group", None)
+    if mod.type != "NODES" or group is None or not group.name.startswith(_SMOOTH_BY_ANGLE_GROUPS):
+        return None
+    for item in group.interface.items_tree:
+        if getattr(item, "in_out", "") != "INPUT" or item.name != "Angle":
+            continue
+        ident = item.identifier
+        getters = (
+            lambda: getattr(mod.properties.inputs, ident).value,  # Blender 5
+            lambda: mod[ident],  # Blender 4
+        )
+        for getter in getters:
+            try:
+                return float(getter())
+            except Exception:
+                continue
+        return None  # unreadable: keep the modifier and apply it as before
+    return None
+
+
+def _detach_trailing_subdivision(obj: Any) -> Optional[Dict[str, Any]]:
+    """Remove the Subdivision Surface modifiers at the end of *obj*'s stack and describe them.
+
+    Applying them multiplies the geometry (a car: 0.4 M polygons became 4.4 M and Cinema 4D needed
+    minutes to load it). The modifier is put back after the other modifiers are applied and the FBX
+    exporter writes it as FBX subdivision with the cage and its edge creases; Cinema 4D's importer
+    turns that into a Subdivision Surface generator with an SDS Weight tag, which also leaves the
+    model editable. Only plain Catmull-Clark qualifies; anything else is applied as before.
+    """
+    if obj.type != "MESH" or obj.data is None:
+        return None
+    # "Smooth by Angle" after the subdivision only marks sharp edges: Phong's angle does that.
+    smoothing = []
+    for mod in reversed(list(obj.modifiers)):
+        angle = _smooth_by_angle(mod) if (mod.show_viewport and mod.show_render) else None
+        if angle is None:
+            break
+        smoothing.append((mod, angle))
+    trailing = []
+    for mod in reversed(list(obj.modifiers)[: len(obj.modifiers) - len(smoothing)]):
+        if mod.type != "SUBSURF":
+            break
+        if not (mod.show_viewport and mod.show_render):
+            break
+        trailing.append(mod)
+    if not trailing or any(mod.subdivision_type != "CATMULL_CLARK" for mod in trailing):
+        return None
+    levels = sum(int(mod.levels) for mod in trailing)
+    render_levels = sum(int(mod.render_levels) for mod in trailing)
+    if max(levels, render_levels) <= 0:
+        return None
+    first = trailing[-1]  # the earliest of them sets how UVs and borders are treated
+    info = {
+        "levels": levels,
+        "render_levels": render_levels,
+        "uv_smooth": str(getattr(first, "uv_smooth", "PRESERVE_BOUNDARIES")),
+        "boundary_smooth": str(getattr(first, "boundary_smooth", "ALL")),
+        "creases": bool(getattr(first, "use_creases", True)) and _mesh_has_creases(obj.data),
+    }
+    if smoothing:
+        info["smooth_angle"] = math.degrees(min(angle for _, angle in smoothing))
+    for mod, _ in smoothing:
+        obj.modifiers.remove(mod)
+    for mod in trailing:
+        obj.modifiers.remove(mod)
+    return info
+
+
+def _restore_subdivision(obj: Any, info: Dict[str, Any]) -> None:
+    """Put one Subdivision Surface modifier back on the converted cage, for the FBX exporter."""
+    mod = obj.modifiers.new("Subdivision", "SUBSURF")
+    mod.subdivision_type = "CATMULL_CLARK"
+    mod.levels = int(info.get("levels") or 1)
+    mod.render_levels = int(info.get("render_levels") or 0)
+    for attr in ("uv_smooth", "boundary_smooth"):
+        with contextlib.suppress(Exception):
+            setattr(mod, attr, info[attr])
+    with contextlib.suppress(Exception):
+        mod.use_creases = bool(info.get("creases"))
+
+
 def _apply_modifiers_and_convert_meshes(scene: Any, view_layer: Any, cutters: Set[str]) -> None:
     """Convert convertible geometry objects to evaluated meshes and validate CustomData."""
     convertible_types = {"MESH", "CURVE", "SURFACE", "FONT", "META"}
@@ -209,6 +316,9 @@ def _apply_modifiers_and_convert_meshes(scene: Any, view_layer: Any, cutters: Se
             _ensure_geonodes_realize_instances(obj)
             if obj.data is not None and getattr(obj.data, "users", 1) > 1:
                 obj.data = obj.data.copy()
+            subdivision = _detach_trailing_subdivision(obj)
+            if subdivision is not None:
+                obj[SUBDIVISION_PROP] = json.dumps(subdivision)
             bpy.ops.object.select_all(action="DESELECT")
             obj.select_set(True)
             view_layer.objects.active = obj
@@ -226,6 +336,13 @@ def _apply_modifiers_and_convert_meshes(scene: Any, view_layer: Any, cutters: Se
             with contextlib.suppress(Exception):
                 obj.data.validate(verbose=False)
                 obj.data.update()
+            if obj.get(SUBDIVISION_PROP):
+                try:
+                    obj.modifiers.clear()
+                    _restore_subdivision(obj, json.loads(obj[SUBDIVISION_PROP]))
+                except Exception as exc:
+                    log_info(f"could not keep the subdivision of {obj.name!r} live: {exc}")
+                    del obj[SUBDIVISION_PROP]
 
     with contextlib.suppress(Exception):
         bpy.ops.object.select_all(action="DESELECT")
@@ -2112,7 +2229,9 @@ def export_geometry_fbx(out_fbx_path: str, *, only_lights: bool = False) -> None
         "object_types": obj_types,
         "use_mesh_modifiers": True,
         "mesh_smooth_type": "FACE",
-        "use_subsurf": False,
+        # Writes the trailing Subdivision Surface kept by _detach_trailing_subdivision as FBX
+        # subdivision (cage and creases) instead of applying it.
+        "use_subsurf": True,
         "use_mesh_edges": False,
         "use_tspace": False,
         "use_triangles": False,
@@ -2276,7 +2395,18 @@ def _collect_scene_objects_and_materials(scene: Any) -> Tuple[List[Dict[str, Any
                 if mat.name not in seen_mats:
                     seen_mats.add(mat.name)
                     used_materials.append(mat)
-        objects_manifest.append({"name": obj.name, "materials": slot_names})
+        entry: Dict[str, Any] = {"name": obj.name, "materials": slot_names}
+        subdivision = obj.get(SUBDIVISION_PROP)
+        if subdivision:
+            try:
+                entry["subdivision"] = json.loads(subdivision)
+                polys = obj.data.polygons
+                smooth = [False] * len(polys)
+                polys.foreach_get("use_smooth", smooth)
+                entry["subdivision"]["smooth"] = sum(smooth) * 2 >= len(smooth)
+            except (TypeError, ValueError):
+                pass
+        objects_manifest.append(entry)
 
     if not used_materials:
         for mat in bpy.data.materials:

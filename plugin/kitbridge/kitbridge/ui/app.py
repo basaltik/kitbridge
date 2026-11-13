@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import shutil
 import tempfile
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -70,6 +71,9 @@ class KitbridgeApp:
         self._last_search_query: Dict[str, str] = {tab: "" for tab in prefs_mod.TABS}
         # Asset the user clicked while logged out; started once a post-login search returns it.
         self._pending_after_login: Optional[Dict[str, Any]] = None
+        # Downloaded packages without a thumbnail (made by the dev CLI or by older versions):
+        # BlenderKit is asked for them once per session, by asset id.
+        self._thumb_lookups: Dict[str, Dict[str, Any]] = {}
         self._started = False
         self._lock = threading.Lock()
 
@@ -88,7 +92,7 @@ class KitbridgeApp:
         self.dispatcher.register("login", self._on_login_task)
         self.dispatcher.register("oauth2/logout", lambda t: self._post("login_changed"))
         self.dispatcher.register("profiles/get_user_profile", self._on_profile_task)
-        self.dispatcher.register("thumbnail_download", lambda t: self._post("redraw"))
+        self.dispatcher.register("thumbnail_download", lambda t: self._post("thumbnail"))
         self.dispatcher.register("bkclientjs/get_asset", self._on_website_asset)
         self._refresh_cached_ids()
         self._run_bg(self._boot)
@@ -359,6 +363,19 @@ class KitbridgeApp:
                 self._start_job(item, source="website")
         elif kind == "redraw":
             self._bump()
+        elif kind == "thumbnail":
+            self._store_found_thumbnails()
+            self._bump()
+        elif kind == "thumb_found":
+            _, base_id, found = event
+            lookup = self._thumb_lookups.get(base_id)
+            if lookup is not None and found is not None:
+                lookup.update(found)
+                for item in self.results.get("downloaded") or []:
+                    if item.get("assetBaseId") == base_id:
+                        self._apply_lookup(item, lookup)
+                self._store_found_thumbnails()
+                self._bump()
 
     # ── jobs ──────────────────────────────────────────────────────────────
 
@@ -438,13 +455,10 @@ class KitbridgeApp:
             return
 
         try:
-            import shutil
-            dst_thumb = os.path.join(package.path, "thumbnail.jpg")
-            if not os.path.isfile(dst_thumb):
-                thumb_paths = state.asset.get("thumbnailPaths") or {}
-                src_thumb = thumb_paths.get("middle") or thumb_paths.get("small") or thumb_paths.get("large")
-                if src_thumb and os.path.isfile(src_thumb):
-                    shutil.copyfile(src_thumb, dst_thumb)
+            dst_thumb = os.path.join(package.path, THUMBNAIL_NAME)
+            src_thumb = _first_existing(state.asset.get("thumbnailPaths") or {})
+            if src_thumb and not os.path.isfile(dst_thumb):
+                shutil.copyfile(src_thumb, dst_thumb)
         except Exception:
             pass
 
@@ -521,25 +535,95 @@ class KitbridgeApp:
 
     def _list_downloaded(self) -> None:
         items = []
+        missing: List[Tuple[str, str]] = []
         for pkg in pipeline.list_cached():
             asset = pkg.manifest.get("asset") or {}
-            thumb_path = os.path.join(pkg.path, "thumbnail.jpg")
-            thumb_paths = (
-                {"middle": thumb_path, "small": thumb_path, "large": thumb_path}
-                if os.path.isfile(thumb_path)
-                else {}
-            )
-            items.append({
-                "assetBaseId": str(asset.get("base_id") or ""),
+            base_id = str(asset.get("base_id") or "")
+            asset_type = str(asset.get("type") or "")
+            thumb_path = os.path.join(pkg.path, THUMBNAIL_NAME)
+            item: Dict[str, Any] = {
+                "assetBaseId": base_id,
                 "name": str(asset.get("name") or os.path.basename(pkg.path)),
-                "assetType": str(asset.get("type") or ""),
-                "isFree": True,
+                "assetType": asset_type,
+                "tierKnown": False,  # the package does not record Free / Full Plan
                 "packagePath": pkg.path,
                 "resolution": str(asset.get("resolution") or ""),
-                "thumbnailPaths": thumb_paths,
-            })
+                "thumbnailPaths": {},
+            }
+            if os.path.isfile(thumb_path):
+                item["thumbnailPaths"] = {"middle": thumb_path, "small": thumb_path, "large": thumb_path}
+            if base_id:
+                lookup = self._thumb_lookups.get(base_id)
+                if lookup is None and not item["thumbnailPaths"]:
+                    lookup = self._thumb_lookups[base_id] = {"packages": set()}
+                    missing.append((base_id, asset_type))
+                if lookup is not None:
+                    lookup["packages"].add(pkg.path)
+                    self._apply_lookup(item, lookup)
+            items.append(item)
         self.results["downloaded"] = items
+        self._store_found_thumbnails()
+        if missing:
+            self._run_bg(lambda: self._look_up_thumbnails(missing))
         self._set_status(f"{len(items)} downloaded assets (work offline).")
+
+    @staticmethod
+    def _apply_lookup(item: Dict[str, Any], lookup: Dict[str, Any]) -> None:
+        if not item.get("thumbnailPaths") and lookup.get("thumbnailPaths"):
+            item["thumbnailPaths"] = dict(lookup["thumbnailPaths"])
+        if "isFree" in lookup:
+            item.update(isFree=lookup["isFree"], isForSale=lookup.get("isForSale"), tierKnown=True)
+
+    def _look_up_thumbnails(self, wanted: List[Tuple[str, str]]) -> None:
+        """Ask BlenderKit for each asset by id; its search also downloads the thumbnails."""
+        if self.client is None or not self.ready:
+            for base_id, _ in wanted:  # try again on the next listing
+                self._thumb_lookups.pop(base_id, None)
+            return
+        for base_id, asset_type in wanted:
+            tab = asset_type if asset_type in ("model", "material", "hdr") else "model"
+            tempdir = paths.search_temp_dir(tab, create=True)
+            try:
+                task_id = search.start_search(
+                    self.client, query=f"asset_base_id:{base_id}", asset_type=tab,
+                    page_size=1, api_key=self._api_key(), tempdir=tempdir,
+                )
+            except Exception as exc:
+                log.debug("Thumbnail lookup for %s failed: %s", base_id, exc)
+                continue
+
+            def on_task(task: TaskDict, base_id: str = base_id, tempdir: str = tempdir) -> None:
+                status = str(task.get("status") or "")
+                if status == "finished":
+                    found = next(
+                        (i for i in search.normalise_results(task.get("result") or {}, tempdir=tempdir)
+                         if str(i.get("assetBaseId") or "") == base_id),
+                        None,
+                    )
+                    self._post("thumb_found", base_id, None if found is None else {
+                        "thumbnailPaths": found.get("thumbnailPaths") or {},
+                        "isFree": bool(found.get("isFree")),
+                        "isForSale": found.get("isForSale"),
+                    })
+
+            self.dispatcher.register_task(task_id, on_task)
+
+    def _store_found_thumbnails(self) -> None:
+        """Copy thumbnails found by a lookup into their packages once they are on disk."""
+        for lookup in self._thumb_lookups.values():
+            source = _first_existing(lookup.get("thumbnailPaths") or {})
+            if not source:
+                continue
+            for package_dir in list(lookup.get("packages") or ()):
+                target = os.path.join(package_dir, THUMBNAIL_NAME)
+                if os.path.isfile(target):
+                    lookup["packages"].discard(package_dir)
+                    continue
+                try:
+                    shutil.copyfile(source, target)
+                    lookup["packages"].discard(package_dir)
+                except OSError as exc:
+                    log.debug("Could not store thumbnail in %s: %s", package_dir, exc)
 
     def _refresh_cached_ids(self) -> None:
         try:
@@ -591,6 +675,17 @@ class KitbridgeApp:
 
     def _bump(self) -> None:
         self.version += 1
+
+
+THUMBNAIL_NAME = "thumbnail.jpg"
+
+
+def _first_existing(thumb_paths: Dict[str, Any]) -> str:
+    for key in ("middle", "small", "large"):
+        path = str(thumb_paths.get(key) or "")
+        if path and os.path.isfile(path):
+            return path
+    return ""
 
 
 def log_path() -> str:

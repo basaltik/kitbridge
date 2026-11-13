@@ -305,7 +305,9 @@ def settings_hit_test(px: float, py: float, width: int, margin: int = MARGIN) ->
 # ── Tier Classification & Filtering ─────────────────────────────────────────
 
 def classify_tier(item: Dict[str, Any]) -> str:
-    """Classify an asset into 'FREE', 'FULL PLAN', or 'PAID'."""
+    """Classify an asset into 'FREE', 'FULL PLAN', 'PAID', or '' when unknown (no tag)."""
+    if item.get("tierKnown") is False:
+        return ""
     if item.get("isFree") or str(item.get("access") or "").lower() == "free":
         return "FREE"
     if item.get("isForSale") or (bool(item.get("basePrice")) and not item.get("isFree")):

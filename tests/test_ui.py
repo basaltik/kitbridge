@@ -131,6 +131,10 @@ def test_tier_classification():
     full_plan_asset = {"name": "Studio", "isFree": False, "access": "full"}
     assert layout.classify_tier(full_plan_asset) == "FULL PLAN"
 
+    # Downloaded packages do not record their tier until BlenderKit is asked: no tag.
+    downloaded = {"name": "Car", "isFree": True, "tierKnown": False}
+    assert layout.classify_tier(downloaded) == ""
+
 
 def test_filter_items():
     items = [
