@@ -478,6 +478,8 @@ def test_subdivision_settings_follow_blender():
     assert subdivision_settings({"levels": 1})["SDSOBJECT_SUBRAY_CM"] == 1
     assert custom["SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD"] == "SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD_NONE"
     assert custom["SDSOBJECT_OSD_BOUNDARY_METHOD"] == "SDSOBJECT_OSD_BOUNDARY_METHOD_EDGEANDCORNER"
+    # Creases need Cinema 4D's own Catmull-Clark: OpenSubdiv with an SDS Weight tag crashes C4D.
+    assert subdivision_settings({"levels": 2, "creases": True})["SDSOBJECT_TYPE"] == "SDSOBJECT_TYPE_CM_N"
 
 
 def test_import_geometry_excludes_unwrapped_sds_generators(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

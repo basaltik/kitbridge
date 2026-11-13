@@ -399,8 +399,11 @@ def subdivision_settings(info: Dict[str, Any]) -> Dict[str, Any]:
     levels = max(0, min(6, int(info.get("levels") or 0)))
     raw_render = info.get("render_levels")
     render_levels = levels if raw_render is None else max(0, min(6, int(raw_render)))
+    # Creases come as an SDS Weight tag, and OpenSubdiv with that tag crashes Cinema 4D (2024
+    # and 2027) when the scene is evaluated: creased objects keep Cinema 4D's own Catmull-Clark.
+    sds_type = "SDSOBJECT_TYPE_CM_N" if info.get("creases") else "SDSOBJECT_TYPE_OSD_CATMARK"
     return {
-        "SDSOBJECT_TYPE": "SDSOBJECT_TYPE_OSD_CATMARK",
+        "SDSOBJECT_TYPE": sds_type,
         "SDSOBJECT_SUBEDITOR_CM": levels,
         "SDSOBJECT_SUBRAY_CM": render_levels,
         "SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD": _UV_SMOOTH_TO_FVAR.get(
@@ -424,6 +427,13 @@ def _configure_subdivision(sds: Any, obj: Any, info: Dict[str, Any]) -> None:
         except Exception as exc:
             log.debug("Subdivision Surface: %s not set: %s", param, exc)
     sds.SetName(obj.GetName())
+    if not info.get("creases"):
+        # The FBX importer adds an (empty) SDS Weight tag to every subdivided mesh; with
+        # OpenSubdiv it crashes Cinema 4D, so it goes when there is nothing to weight.
+        weight_tag_type = getattr(c4d, "Tsds", 1007579)
+        for tag in list(obj.GetTags()):
+            if tag.CheckType(weight_tag_type):
+                tag.Remove()
     # The cage's normal tag does not describe the subdivided surface; let Phong smooth it.
     normal_tag_type = getattr(c4d, "Tnormal", 5711)
     phong_type = getattr(c4d, "Tphong", 5612)
