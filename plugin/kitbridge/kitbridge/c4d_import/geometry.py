@@ -745,7 +745,7 @@ def import_geometry(
             pass
 
         outcome.root_object = root_null
-        outcome.objects = [root_null] + all_temp_objs
+        outcome.objects = [root_null] + _iter_hierarchy(root_null.GetDown())
         return outcome
     finally:
         if temp_doc is not None and hasattr(c4d, "documents") and hasattr(c4d.documents, "KillDocument"):

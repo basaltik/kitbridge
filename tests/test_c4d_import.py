@@ -478,3 +478,144 @@ def test_subdivision_settings_follow_blender():
     assert subdivision_settings({"levels": 1})["SDSOBJECT_SUBRAY_CM"] == 1
     assert custom["SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD"] == "SDSOBJECT_OSD_FVAR_BOUNDARY_METHOD_NONE"
     assert custom["SDSOBJECT_OSD_BOUNDARY_METHOD"] == "SDSOBJECT_OSD_BOUNDARY_METHOD_EDGEANDCORNER"
+
+
+def test_import_geometry_excludes_unwrapped_sds_generators(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``outcome.objects`` must only contain live objects under ``root_null`` after ``_settle_subdivision``."""
+    from kitbridge.c4d_import import geometry
+
+    class FakeObj:
+        def __init__(self, name: str, obj_type: int = 5100) -> None:
+            self.name = name
+            self.obj_type = obj_type
+            self.parent: FakeObj | None = None
+            self.children: list[FakeObj] = []
+            self.alive = True
+
+        def GetName(self) -> str:
+            if not self.alive:
+                raise ReferenceError("the object 'c4d.BaseObject' is not alive")
+            return self.name
+
+        def SetName(self, name: str) -> None:
+            self.name = name
+
+        def CheckType(self, t: int) -> bool:
+            return self.obj_type == t
+
+        def GetUp(self) -> FakeObj | None:
+            return self.parent
+
+        def GetDown(self) -> FakeObj | None:
+            return self.children[0] if self.children else None
+
+        def GetNext(self) -> FakeObj | None:
+            if self.parent is None:
+                return None
+            idx = self.parent.children.index(self)
+            return self.parent.children[idx + 1] if idx + 1 < len(self.parent.children) else None
+
+        def GetTags(self) -> list:
+            return []
+
+        def GetMg(self) -> str:
+            return "mg"
+
+        def SetMg(self, _mg: str) -> None:
+            pass
+
+        def SetMl(self, _ml: str) -> None:
+            pass
+
+        def Remove(self) -> None:
+            if self.parent is not None:
+                self.parent.children.remove(self)
+                self.parent = None
+
+        def InsertUnder(self, parent: FakeObj) -> None:
+            self.Remove()
+            self.parent = parent
+            parent.children.append(self)
+
+        def InsertBefore(self, sibling: FakeObj) -> None:
+            self.Remove()
+            parent = sibling.parent
+            assert parent is not None
+            self.parent = parent
+            idx = parent.children.index(sibling)
+            parent.children.insert(idx, self)
+
+    class FakeDoc(FakeObj):
+        def __init__(self) -> None:
+            super().__init__("doc", 0)
+
+        def GetFirstObject(self) -> FakeObj | None:
+            return self.GetDown()
+
+        def GetObjects(self) -> list[FakeObj]:
+            return list(self.children)
+
+        def GetFirstMaterial(self) -> None:
+            return None
+
+        def InsertObject(self, obj: FakeObj) -> None:
+            obj.InsertUnder(self)
+
+        def GetActiveObjects(self, _flags: int) -> list:
+            return []
+
+        def GetActiveObject(self) -> None:
+            return None
+
+    temp_doc = FakeDoc()
+    sds_gen = FakeObj("Mesh_SDS", 1007455)  # Osds wrapper created by FBX importer
+    mesh = FakeObj("Mesh", 5100)            # Opolygon child not marked subdivided in manifest
+    sds_gen.InsertUnder(temp_doc)
+    mesh.InsertUnder(sds_gen)
+
+    class FakeDocuments:
+        @staticmethod
+        def LoadDocument(_path: str, _flags: int) -> FakeDoc:
+            return temp_doc
+
+        @staticmethod
+        def KillDocument(d: FakeDoc) -> None:
+            # Killing temp_doc invalidates any objects that were removed and never transferred to target doc
+            if sds_gen.parent is None:
+                sds_gen.alive = False
+
+    class FakeC4D:
+        Onull = 5140
+        Opolygon = 5100
+        Osds = 1007455
+        Tsds = 1007579
+        Ttexture = 5616
+        SCENEFILTER_OBJECTS = 1
+        SCENEFILTER_MATERIALS = 2
+        documents = FakeDocuments
+
+        @staticmethod
+        def BaseObject(obj_type: int) -> FakeObj:
+            return FakeObj("Root", obj_type)
+
+        @staticmethod
+        def Matrix() -> str:
+            return "ml"
+
+    fbx_file = tmp_path / "geometry.fbx"
+    fbx_file.write_bytes(b"fbx")
+    monkeypatch.setattr(geometry, "c4d", FakeC4D)
+    monkeypatch.setattr(geometry, "_configure_fbx_importer", lambda **_kw: (None, {}))
+    monkeypatch.setattr(geometry, "_restore_fbx_importer", lambda *_a: None)
+    monkeypatch.setattr(geometry, "_bake_object_scale", lambda _o: None)
+
+    target_doc = FakeDoc()
+    manifest = {
+        "asset": {"name": "TestModel", "type": "model"},
+        "geometry": "geometry.fbx",
+        "objects": [{"name": "Mesh", "materials": []}],
+    }
+    outcome = geometry.import_geometry(target_doc, manifest, str(tmp_path), {})
+    assert sds_gen.alive is False
+    assert [o.GetName() for o in outcome.objects] == ["TestModel", "Mesh"]
+
