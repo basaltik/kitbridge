@@ -296,6 +296,19 @@ def _restore_subdivision(obj: Any, info: Dict[str, Any]) -> None:
         mod.use_creases = bool(info.get("creases"))
 
 
+def _modifier_targets(obj: Any) -> List[Any]:
+    """Objects that *obj*'s modifiers point at."""
+    targets = []
+    for mod in obj.modifiers:
+        for prop in mod.bl_rna.properties:
+            if prop.type != "POINTER" or getattr(prop.fixed_type, "identifier", "") != "Object":
+                continue
+            target = getattr(mod, prop.identifier, None)
+            if target is not None and target is not obj:
+                targets.append(target)
+    return targets
+
+
 def _apply_modifiers_and_convert_meshes(scene: Any, view_layer: Any, cutters: Set[str]) -> None:
     """Convert convertible geometry objects to evaluated meshes and validate CustomData."""
     convertible_types = {"MESH", "CURVE", "SURFACE", "FONT", "META"}
@@ -309,6 +322,12 @@ def _apply_modifiers_and_convert_meshes(scene: Any, view_layer: Any, cutters: Se
 
     with contextlib.suppress(Exception):
         bpy.ops.object.mode_set(mode="OBJECT")
+
+    # An object another one's modifier uses (the curve of a Curve deform, an Array's end cap, a
+    # Boolean operand) is converted last: converting it first breaks that modifier, and a chain
+    # bent along a curve came out straight.
+    referenced = {target.name for obj in candidates for target in _modifier_targets(obj)}
+    candidates.sort(key=lambda o: o.name in referenced)
 
     depsgraph = bpy.context.evaluated_depsgraph_get()
     for obj in candidates:
