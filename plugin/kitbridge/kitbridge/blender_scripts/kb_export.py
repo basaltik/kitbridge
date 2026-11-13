@@ -57,7 +57,7 @@ from kitbridge.core import shader_graph  # noqa: E402
 
 SCHEMA_VERSION = 1
 # Keep equal to pipeline.EXPORTER_VERSION; raise both when packages need converting again.
-EXPORTER_VERSION = 11  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests; 6: pristine bakes, fine normals, SSS/translucency; 7: displacement method; 8: real UDIM tiles; 9: sphere UVs, plane bakes, bump in baked normal; 10: bake only the material's faces (from all its objects) in an empty scene, AO/Bevel bypassed; 11: Subdivision Surface kept live
+EXPORTER_VERSION = 12  # 3: WebP/AVIF; 4: normalized relief; 5: UDIM and light manifests; 6: pristine bakes, fine normals, SSS/translucency; 7: displacement method; 8: real UDIM tiles; 9: sphere UVs, plane bakes, bump in baked normal; 10: bake only the material's faces (from all its objects) in an empty scene, AO/Bevel bypassed; 11: Subdivision Surface kept live; 12: SSS/MixShader/Fresnel glass classification, nested group bakes, HDR emission, disp_as_bump GPU bake
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -925,10 +925,15 @@ def _manual_inline(parent_tree: Any, group_node: Any) -> bool:
             if fn.bl_idname == "NodeGroupInput" and tn.bl_idname == "NodeGroupOutput":
                 ext_in = _find_matching_socket(group_node.inputs, fs, fn.outputs)
                 ext_out = _find_matching_socket(group_node.outputs, ts, tn.inputs)
-                if ext_in is not None and ext_out is not None and ext_in.is_linked:
-                    src_sock = ext_in.links[0].from_socket
-                    for ext_link in list(ext_out.links):
-                        parent_tree.links.new(src_sock, ext_link.to_socket)
+                if ext_in is not None and ext_out is not None:
+                    if ext_in.is_linked:
+                        src_sock = ext_in.links[0].from_socket
+                        for ext_link in list(ext_out.links):
+                            parent_tree.links.new(src_sock, ext_link.to_socket)
+                    else:
+                        for ext_link in list(ext_out.links):
+                            with contextlib.suppress(Exception):
+                                ext_link.to_socket.default_value = ext_in.default_value
                 continue
 
             if fn.bl_idname == "NodeGroupInput":
@@ -1325,6 +1330,7 @@ def _detect_constant_bake(
     ch_name: str,
     *,
     is_color: bool,
+    is_linear_color: bool = False,
     tol: float = 0.008,
 ) -> Tuple[bool, Optional[Any]]:
     """Inspect baked pixel buffer and return ``(True, constant_value)`` if uniform across UV islands."""
@@ -1365,12 +1371,19 @@ def _detect_constant_bake(
         r_mid = (r_min + r_max) * 0.5
         g_mid = (g_min + g_max) * 0.5
         b_mid = (b_min + b_max) * 0.5
-        # Color bake buffers use sRGB color management; convert back to linear RGB for manifest
-        rgb = [
-            round(_srgb_to_linear(r_mid), 6),
-            round(_srgb_to_linear(g_mid), 6),
-            round(_srgb_to_linear(b_mid), 6),
-        ]
+        if is_linear_color:
+            rgb = [
+                round(max(0.0, r_mid), 6),
+                round(max(0.0, g_mid), 6),
+                round(max(0.0, b_mid), 6),
+            ]
+        else:
+            # Color bake buffers use sRGB color management; convert back to linear RGB for manifest
+            rgb = [
+                round(_srgb_to_linear(r_mid), 6),
+                round(_srgb_to_linear(g_mid), 6),
+                round(_srgb_to_linear(b_mid), 6),
+            ]
         return True, rgb
 
     val = round((r_min + r_max) * 0.5, 6)
@@ -1421,14 +1434,28 @@ def _build_channel_emission_branch(
                 return _build_channel_emission_branch(node_tree, sub2, channel_name, temp_nodes, depth + 1)
             if t2 == "BSDF_TRANSPARENT" and sub1 is not None:
                 return _build_channel_emission_branch(node_tree, sub1, channel_name, temp_nodes, depth + 1)
+        if stype == "ADD_SHADER" and channel_name != "emission":
+            if t1 == "BSDF_TRANSLUCENT" and sub2 is not None:
+                return _build_channel_emission_branch(node_tree, sub2, channel_name, temp_nodes, depth + 1)
+            if t2 == "BSDF_TRANSLUCENT" and sub1 is not None:
+                return _build_channel_emission_branch(node_tree, sub1, channel_name, temp_nodes, depth + 1)
 
         out1 = _build_channel_emission_branch(node_tree, sub1, channel_name, temp_nodes, depth + 1)
         out2 = _build_channel_emission_branch(node_tree, sub2, channel_name, temp_nodes, depth + 1)
         if stype == "ADD_SHADER":
-            comb = node_tree.nodes.new("ShaderNodeAddShader")
+            if channel_name in ("base_color", "emission"):
+                comb = node_tree.nodes.new("ShaderNodeAddShader")
+                temp_nodes.append(comb)
+                node_tree.links.new(out1, comb.inputs[0])
+                node_tree.links.new(out2, comb.inputs[1])
+                return comb.outputs["Shader"]
+            comb = node_tree.nodes.new("ShaderNodeMixShader")
             temp_nodes.append(comb)
-            node_tree.links.new(out1, comb.inputs[0])
-            node_tree.links.new(out2, comb.inputs[1])
+            mix_fac_in = shader_graph.get_input_socket(comb, "Factor", "Fac") or comb.inputs[0]
+            if mix_fac_in is not None:
+                mix_fac_in.default_value = 0.5
+            node_tree.links.new(out1, comb.inputs[1])
+            node_tree.links.new(out2, comb.inputs[2])
             return comb.outputs["Shader"]
 
         mix_sh = node_tree.nodes.new("ShaderNodeMixShader")
@@ -1809,6 +1836,34 @@ def _new_bake_scene(scene: Any) -> Any:
     return bake_scene
 
 
+def _surface_shaders_have_no_groups(surf_sock: Any, depth: int = 0) -> bool:
+    """Return True if *surf_sock* and any nested Mix/Add Shader branches contain no ShaderNodeGroup."""
+    if surf_sock is None or not surf_sock.is_linked or depth > 8:
+        return True
+    node = surf_sock.links[0].from_node
+    if node is None:
+        return True
+    if node.bl_idname == "ShaderNodeGroup":
+        return False
+    stype = shader_graph.canonical_node_type(node)
+    if stype in ("MIX_SHADER", "ADD_SHADER"):
+        for inp in node.inputs:
+            if inp.type == "SHADER" and inp.is_linked:
+                if not _surface_shaders_have_no_groups(inp, depth + 1):
+                    return False
+    return True
+
+
+def _ensure_unbaked_fallback_channels(cls: shader_graph.MaterialClassification) -> None:
+    """Populate default fallback values for core channels when baking is skipped."""
+    if "base_color" in cls.sockets_to_bake and "base_color" not in cls.channels:
+        cls.channels["base_color"] = {"value": [0.8, 0.8, 0.8]}
+    if "metallic" in cls.sockets_to_bake and "metallic" not in cls.channels:
+        cls.channels["metallic"] = {"value": 0.0}
+    if "roughness" in cls.sockets_to_bake and "roughness" not in cls.channels:
+        cls.channels["roughness"] = {"value": 0.5}
+
+
 def _bake_material_channels(
     mat: Any,
     cls: shader_graph.MaterialClassification,
@@ -1829,6 +1884,7 @@ def _bake_material_channels(
     normal is also baked whenever Cycles shades the displacement as bump (methods BUMP/BOTH).
     """
     if not mat.use_nodes or mat.node_tree is None:
+        _ensure_unbaked_fallback_channels(cls)
         return []
     channels_to_bake = list(cls.sockets_to_bake)
     disp_as_bump = (
@@ -1842,16 +1898,18 @@ def _bake_material_channels(
     if pristine is not None:
         p_out = _find_active_material_output(pristine.node_tree)
         p_surf = p_out.inputs.get("Surface") if p_out is not None else None
-        if p_surf is not None and p_surf.is_linked and p_surf.links[0].from_node.bl_idname != "ShaderNodeGroup":
+        if p_surf is not None and p_surf.is_linked and _surface_shaders_have_no_groups(p_surf):
             bake_mat = pristine
 
     nt = bake_mat.node_tree
     output_node = _find_active_material_output(nt)
     if output_node is None:
+        _ensure_unbaked_fallback_channels(cls)
         return []
     surf_in = output_node.inputs.get("Surface")
     surf_node = surf_in.links[0].from_node if (surf_in and surf_in.is_linked) else None
     if surf_node is None:
+        _ensure_unbaked_fallback_channels(cls)
         return []
 
     scene = bpy.context.scene
@@ -1859,6 +1917,7 @@ def _bake_material_channels(
     objs = _objects_using_material(scene, mat)
     if not objs:
         log_info(f"bake: skipping {mat.name!r} (no mesh objects use it)")
+        _ensure_unbaked_fallback_channels(cls)
         return []
 
     uv_name, uv_warn = _ensure_uvs_on_material_objects(mat, objs)
@@ -1877,6 +1936,7 @@ def _bake_material_channels(
         # A slot nobody's faces use (left-over material): nothing to bake, nothing to show.
         bpy.data.meshes.remove(bake_mesh)
         log_info(f"bake: skipping {mat.name!r} (no faces use it)")
+        _ensure_unbaked_fallback_channels(cls)
         return []
     bake_mesh.materials.clear()
     bake_mesh.materials.append(bake_mat)
@@ -1922,6 +1982,7 @@ def _bake_material_channels(
 
             is_color = ch_name in ("base_color", "emission")
             is_non_color = not is_color
+            use_float_buf = is_non_color or ch_name == "emission"
             img_name = f"{safe_mat}_{ch_name}"
             out_png = os.path.join(tex_dir, f"{img_name}.png")
             rel_png = f"textures/{img_name}.png"
@@ -1931,7 +1992,7 @@ def _bake_material_channels(
                 width=bake_resolution,
                 height=bake_resolution,
                 alpha=True,
-                float_buffer=is_non_color,
+                float_buffer=use_float_buf,
             )
             with contextlib.suppress(Exception):
                 bake_img.colorspace_settings.name = "Non-Color" if is_non_color else "sRGB"
@@ -2009,8 +2070,22 @@ def _bake_material_channels(
                         f"midlevel={raw_midlevel:.9g}, scale={raw_scale:.9g}, method={method!r}"
                     )
 
+                emission_scale = 1.0
+                if ch_name == "emission":
+                    with contextlib.suppress(Exception):
+                        em_px = _pixels_rgba(bake_img)
+                        if em_px.shape[0] > 0:
+                            em_alpha = em_px[:, 3]
+                            em_valid = em_px[em_alpha >= 0.99, :3] if (em_alpha.min() < 0.99 and em_alpha.max() >= 0.99) else em_px[:, :3]
+                            if em_valid.size > 0:
+                                max_c = float(em_valid.max())
+                                if max_c > 1.0 + 1e-4:
+                                    emission_scale = max_c
+                                    em_px[:, :3] = em_px[:, :3] / max_c
+                                    bake_img.pixels.foreach_set(em_px.ravel())
+
                 is_const_bake, const_bake_val = _detect_constant_bake(
-                    bake_img, ch_name, is_color=is_color
+                    bake_img, ch_name, is_color=is_color, is_linear_color=(ch_name == "emission")
                 )
                 if is_const_bake:
                     if os.path.isfile(out_png):
@@ -2028,7 +2103,7 @@ def _bake_material_channels(
                             meta = cls.bake_metadata.get("emission") or {"strength": 1.0}
                             cls.channels["emission"] = {
                                 "value": rgb_val,
-                                "strength": float(meta.get("strength", 1.0)),
+                                "strength": round(float(meta.get("strength", 1.0)) * emission_scale, 6),
                             }
                         else:
                             cls.channels.pop("emission", None)
@@ -2110,7 +2185,7 @@ def _bake_material_channels(
                             "texture": rel_png,
                             "colorspace": "srgb",
                             "channel": "rgb",
-                            "strength": float(meta.get("strength", 1.0)),
+                            "strength": round(float(meta.get("strength", 1.0)) * emission_scale, 6),
                         }
                     elif ch_name == "roughness":
                         cls.channels["roughness"] = {
@@ -2170,9 +2245,11 @@ def _bake_material_channels(
             view_layer.objects.active = rep_obj
 
     disp_entry = cls.channels.get("displacement")
-    if disp_as_bump and "normal" in baked_channels and isinstance(disp_entry, dict):
+    if disp_as_bump and ("normal" in baked_channels or "normal" in channels_to_bake) and isinstance(disp_entry, dict):
         # The importer must not add the height as bump again.
         disp_entry["bump_in_normal"] = True
+
+    _ensure_unbaked_fallback_channels(cls)
 
     # When all textured channels were produced by baking, UV mapping is already baked into 0..1
     has_unbaked_tex = any(
@@ -2369,7 +2446,7 @@ def _resolve_blend_method(
             if isinstance(val, (int, float)) and float(val) > 0.001:
                 has_transmission = True
 
-    if has_non_opaque_alpha or has_transmission or cls_blend_method == "blend":
+    if has_non_opaque_alpha or has_transmission:
         return "blend"
 
     surf_rm = str(getattr(mat, "surface_render_method", "") or "").upper()
@@ -2569,7 +2646,15 @@ def run_export(params: Dict[str, Any]) -> str:
 
         for w in cls.warnings:
             emit_warning(f"[{mat.name}] {w}")
-        if cls.sockets_to_bake:
+        mat_disp_as_bump = (
+            asset_type == "material"
+            and (
+                isinstance(cls.channels.get("displacement"), dict)
+                or "displacement" in cls.sockets_to_bake
+            )
+            and _displacement_method(mat) in ("BUMP", "BOTH")
+        )
+        if cls.sockets_to_bake or mat_disp_as_bump:
             any_bakes_needed = True
         classified_materials.append((mat, cls))
 

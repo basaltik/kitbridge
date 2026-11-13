@@ -98,6 +98,8 @@ _NODE_TYPE_ALIASES: Dict[str, str] = {
     "SHADERNODEBSDFTRANSPARENT": "BSDF_TRANSPARENT",
     "BSDF_TRANSPARENT": "BSDF_TRANSPARENT",
     "TRANSPARENT_BSDF": "BSDF_TRANSPARENT",
+    "SHADERNODESUBSURFACESCATTERING": "SUBSURFACE_SCATTERING",
+    "SUBSURFACE_SCATTERING": "SUBSURFACE_SCATTERING",
     "SHADERNODELIGHTPATH": "LIGHT_PATH",
     "LIGHT_PATH": "LIGHT_PATH",
     "LIGHTPATH": "LIGHT_PATH",
@@ -115,6 +117,12 @@ _NODE_TYPE_ALIASES: Dict[str, str] = {
     "MIX_RGB": "MIX_RGB",
     "SHADERNODEMATH": "MATH",
     "MATH": "MATH",
+    "SHADERNODEHUESATURATION": "HUE_SAT",
+    "HUE_SAT": "HUE_SAT",
+    "SHADERNODEGAMMA": "GAMMA",
+    "GAMMA": "GAMMA",
+    "SHADERNODEBRIGHTCONTRAST": "BRIGHTCONTRAST",
+    "BRIGHTCONTRAST": "BRIGHTCONTRAST",
     "SHADERNODEAMBIENTOCCLUSION": "AMBIENT_OCCLUSION",
     "AMBIENT_OCCLUSION": "AMBIENT_OCCLUSION",
     "AO": "AMBIENT_OCCLUSION",
@@ -122,6 +130,22 @@ _NODE_TYPE_ALIASES: Dict[str, str] = {
     "LAYER_WEIGHT": "LAYER_WEIGHT",
     "SHADERNODEFRESNEL": "FRESNEL",
     "FRESNEL": "FRESNEL",
+    "SHADERNODETEXNOISE": "TEX_NOISE",
+    "TEX_NOISE": "TEX_NOISE",
+    "SHADERNODETEXVORONOI": "TEX_VORONOI",
+    "TEX_VORONOI": "TEX_VORONOI",
+    "SHADERNODETEXWAVE": "TEX_WAVE",
+    "TEX_WAVE": "TEX_WAVE",
+    "SHADERNODETEXMUSGRAVE": "TEX_MUSGRAVE",
+    "TEX_MUSGRAVE": "TEX_MUSGRAVE",
+    "SHADERNODETEXCHECKER": "TEX_CHECKER",
+    "TEX_CHECKER": "TEX_CHECKER",
+    "SHADERNODETEXBRICK": "TEX_BRICK",
+    "TEX_BRICK": "TEX_BRICK",
+    "SHADERNODETEXGRADIENT": "TEX_GRADIENT",
+    "TEX_GRADIENT": "TEX_GRADIENT",
+    "SHADERNODETEXMAGIC": "TEX_MAGIC",
+    "TEX_MAGIC": "TEX_MAGIC",
 }
 
 _SEP_CHANNEL_MAP: Dict[str, str] = {
@@ -711,6 +735,76 @@ def resolve_image_uv(
     return UVTransform(map_name=uv_map_name, scale=scale, offset=offset, rotation=rotation), ""
 
 
+def _unwrap_identity_color_chain(
+    node: Any,
+    out_socket_name: str,
+    max_hops: int = 8,
+) -> Tuple[Any, str]:
+    """Skip no-op color pass-through nodes (identity ``Hue/Sat``, ``Gamma(1)``, ``Bright/Contrast(0, 0)``)."""
+    cur_node = node
+    cur_sock = out_socket_name
+    for _ in range(max_hops):
+        ntype = canonical_node_type(cur_node)
+        if ntype == "HUE_SAT":
+            col_in = get_input_socket(cur_node, "Color")
+            up = resolve_upstream(col_in)
+            if up is None:
+                break
+            fac_s = get_input_socket(cur_node, "Fac", "Factor")
+            fac_v = _extract_constant_scalar(fac_s, -1.0) if fac_s is not None else None
+            h_s = get_input_socket(cur_node, "Hue")
+            s_s = get_input_socket(cur_node, "Saturation")
+            v_s = get_input_socket(cur_node, "Value")
+            h_v = _extract_constant_scalar(h_s, -1.0) if h_s is not None else None
+            s_v = _extract_constant_scalar(s_s, -1.0) if s_s is not None else None
+            v_v = _extract_constant_scalar(v_s, -1.0) if v_s is not None else None
+            is_zero_fac = fac_v is not None and abs(fac_v) < 1e-5
+            is_identity_hsv = (
+                h_v is not None
+                and s_v is not None
+                and v_v is not None
+                and abs(h_v - 0.5) < 1e-5
+                and abs(s_v - 1.0) < 1e-5
+                and abs(v_v - 1.0) < 1e-5
+                and (fac_s is None or fac_v is not None)
+            )
+            if is_zero_fac or is_identity_hsv:
+                cur_node, cur_sock = up
+                continue
+            break
+
+        if ntype == "GAMMA":
+            col_in = get_input_socket(cur_node, "Color")
+            up = resolve_upstream(col_in)
+            g_s = get_input_socket(cur_node, "Gamma")
+            g_v = _extract_constant_scalar(g_s, -1.0) if g_s is not None else None
+            if up is not None and g_v is not None and abs(g_v - 1.0) < 1e-5:
+                cur_node, cur_sock = up
+                continue
+            break
+
+        if ntype == "BRIGHTCONTRAST":
+            col_in = get_input_socket(cur_node, "Color")
+            up = resolve_upstream(col_in)
+            b_s = get_input_socket(cur_node, "Bright", "Brightness")
+            c_s = get_input_socket(cur_node, "Contrast")
+            b_v = _extract_constant_scalar(b_s, -1.0) if b_s is not None else None
+            c_v = _extract_constant_scalar(c_s, -1.0) if c_s is not None else None
+            if (
+                up is not None
+                and b_v is not None
+                and c_v is not None
+                and abs(b_v) < 1e-5
+                and abs(c_v) < 1e-5
+            ):
+                cur_node, cur_sock = up
+                continue
+            break
+
+        break
+    return cur_node, cur_sock
+
+
 def _match_image_source(
     node: Any,
     out_socket_name: str,
@@ -722,6 +816,7 @@ def _match_image_source(
 
     Returns ``(channel_dict, uv_transform, warnings, fail_reason)``.
     """
+    node, out_socket_name = _unwrap_identity_color_chain(node, out_socket_name)
     ntype = canonical_node_type(node)
 
     if ntype == "TEX_IMAGE":
@@ -753,7 +848,7 @@ def _match_image_source(
         upstream = resolve_upstream(color_in)
         if upstream is None:
             return None, None, [], "Separate Color has no linked Image Texture"
-        up_node, up_sock = upstream
+        up_node, up_sock = _unwrap_identity_color_chain(upstream[0], upstream[1])
         if canonical_node_type(up_node) != "TEX_IMAGE":
             return None, None, [], f"Separate Color input {canonical_node_type(up_node)} requires baking"
         rel_path, is_udim, warnings = _image_info(up_node)
@@ -976,6 +1071,8 @@ def _classify_normal_socket(
                 "strength": strength,
                 "flip_green": False,
             }
+            if tex_info.get("udim"):
+                normal_data["udim"] = True
             return SocketClassification(
                 decision=DIRECT,
                 channel_name="normal",
@@ -1084,6 +1181,8 @@ def _classify_normal_socket(
                 bump_data["channel"] = tex_info["channel"]
             if invert_bump:
                 bump_data["invert"] = True
+            if tex_info.get("udim"):
+                bump_data["udim"] = True
             return SocketClassification(
                 decision=DIRECT,
                 channel_name="bump",
@@ -1176,6 +1275,8 @@ def _classify_displacement_socket(
             }
             if tex_info.get("channel") in ("r", "g", "b", "a"):
                 disp_data["channel"] = tex_info["channel"]
+            if tex_info.get("udim"):
+                disp_data["udim"] = True
             return SocketClassification(
                 decision=DIRECT,
                 channel_name="displacement",
@@ -1208,16 +1309,19 @@ def _classify_displacement_socket(
         default_uv_map=default_uv_map,
     )
     if tex_info is not None:
+        disp_direct: Dict[str, Any] = {
+            "texture": tex_info["texture"],
+            "colorspace": "raw",
+            "midlevel": 0.5,
+            "scale": 0.05,
+        }
+        if tex_info.get("udim"):
+            disp_direct["udim"] = True
         return SocketClassification(
             decision=DIRECT,
             channel_name="displacement",
             is_constant=False,
-            channel_data={
-                "texture": tex_info["texture"],
-                "colorspace": "raw",
-                "midlevel": 0.5,
-                "scale": 0.05,
-            },
+            channel_data=disp_direct,
             uv=uv_tf,
             warnings=warnings,
         )
@@ -1612,6 +1716,172 @@ def classify_principled_bsdf(
     return result
 
 
+_SPATIAL_TEXTURE_TYPES = {
+    "TEX_IMAGE",
+    "TEX_NOISE",
+    "TEX_VORONOI",
+    "TEX_WAVE",
+    "TEX_MUSGRAVE",
+    "TEX_CHECKER",
+    "TEX_BRICK",
+    "TEX_GRADIENT",
+    "TEX_MAGIC",
+    "AMBIENT_OCCLUSION",
+}
+
+_NON_SHADER_SURFACE_TYPES = {
+    "TEX_IMAGE",
+    "RGB",
+    "VALUE",
+    "VALTORGB",
+    "MIX",
+    "MIX_RGB",
+    "HUE_SAT",
+    "GAMMA",
+    "BRIGHTCONTRAST",
+    "INVERT",
+    "SEPARATE_COLOR",
+    "SEPARATE_RGB",
+    "MATH",
+}
+
+_KNOWN_LEAF_SHADERS = {
+    "BSDF_PRINCIPLED",
+    "BSDF_DIFFUSE",
+    "BSDF_GLOSSY",
+    "BSDF_ANISOTROPIC",
+    "BSDF_METALLIC",
+    "BSDF_GLASS",
+    "BSDF_REFRACTION",
+    "BSDF_TRANSPARENT",
+    "EMISSION",
+    "SUBSURFACE_SCATTERING",
+}
+
+
+def _has_upstream_view_angle(socket: Any, max_depth: int = 16) -> bool:
+    """Return ``True`` if *socket* depends on ``Fresnel`` or ``Layer Weight`` with no spatial texture."""
+    has_view = False
+    has_spatial = False
+
+    def _walk(sock: Any, depth: int) -> None:
+        nonlocal has_view, has_spatial
+        if sock is None or depth <= 0:
+            return
+        up = resolve_upstream(sock)
+        if up is None:
+            return
+        node, _ = up
+        ntype = canonical_node_type(node)
+        if ntype in ("FRESNEL", "LAYER_WEIGHT"):
+            has_view = True
+        if ntype in _SPATIAL_TEXTURE_TYPES:
+            has_spatial = True
+        for inp in _get_ordered_inputs(node):
+            _walk(inp, depth - 1)
+
+    _walk(socket, max_depth)
+    return has_view and not has_spatial
+
+
+def _extract_upstream_fresnel_ior(socket: Any, max_depth: int = 16) -> Optional[float]:
+    """Extract constant ``IOR`` from an upstream ``Fresnel`` node if present."""
+    if socket is None or max_depth <= 0:
+        return None
+    up = resolve_upstream(socket)
+    if up is None:
+        return None
+    node, _ = up
+    if canonical_node_type(node) == "FRESNEL":
+        ior_s = get_input_socket(node, "IOR")
+        return _extract_constant_scalar(ior_s, 1.45) if ior_s is not None else 1.45
+    for inp in _get_ordered_inputs(node):
+        found = _extract_upstream_fresnel_ior(inp, max_depth - 1)
+        if found is not None:
+            return found
+    return None
+
+
+def _collect_leaf_shaders(
+    node: Any,
+    max_depth: int = 8,
+) -> Tuple[List[Any], bool]:
+    """Return ``(leaf_shader_nodes, has_add_shader)`` under a ``MIX_SHADER``/``ADD_SHADER`` tree."""
+    leaves: List[Any] = []
+    has_add = False
+
+    def _walk(n: Any, d: int) -> None:
+        nonlocal has_add
+        if n is None or d <= 0:
+            return
+        nt = canonical_node_type(n)
+        if nt in ("MIX_SHADER", "ADD_SHADER"):
+            if nt == "ADD_SHADER":
+                has_add = True
+            s1, s2 = _get_shader_branch_sockets(n)
+            u1 = resolve_upstream(s1)
+            u2 = resolve_upstream(s2)
+            if u1 is not None:
+                _walk(u1[0], d - 1)
+            if u2 is not None:
+                _walk(u2[0], d - 1)
+        else:
+            leaves.append(n)
+
+    _walk(node, max_depth)
+    return leaves, has_add
+
+
+def _leaf_needs_normal_bake(leaf: Any) -> bool:
+    ltype = canonical_node_type(leaf)
+    if ltype not in _KNOWN_LEAF_SHADERS:
+        return True
+    if not getattr(leaf, "inputs", None):
+        # Bare stub GraphNode in unit tests with no sockets populated
+        return True
+    nrm_s = get_input_socket(leaf, "Normal")
+    if nrm_s is not None and resolve_upstream(nrm_s) is not None:
+        return True
+    coat_nrm_s = get_input_socket(leaf, "Coat Normal", "Clearcoat Normal")
+    if coat_nrm_s is not None and resolve_upstream(coat_nrm_s) is not None:
+        return True
+    return False
+
+
+def _leaf_has_transmission(leaf: Any) -> bool:
+    ltype = canonical_node_type(leaf)
+    if ltype in ("BSDF_GLASS", "BSDF_REFRACTION"):
+        return True
+    if ltype == "BSDF_PRINCIPLED":
+        tr_s = get_input_socket(leaf, "Transmission Weight", "Transmission")
+        if tr_s is not None:
+            if resolve_upstream(tr_s) is not None:
+                return True
+            val = _extract_constant_scalar(tr_s, 0.0)
+            if val is not None and val > 1e-4:
+                return True
+    return False
+
+
+def _leaf_constant_scalar_channel(leaf: Any, channel_name: str) -> Optional[float]:
+    ltype = canonical_node_type(leaf)
+    if ltype not in _KNOWN_LEAF_SHADERS or not getattr(leaf, "inputs", None):
+        return None
+    if channel_name == "metallic":
+        if ltype == "BSDF_PRINCIPLED":
+            ms = get_input_socket(leaf, "Metallic")
+            return _extract_constant_scalar(ms, 0.0) if ms is not None else None
+        if ltype in ("BSDF_GLOSSY", "BSDF_ANISOTROPIC", "BSDF_METALLIC"):
+            return 1.0
+        return 0.0
+    if channel_name == "roughness":
+        if ltype in ("BSDF_TRANSPARENT", "EMISSION"):
+            return None
+        rs = get_input_socket(leaf, "Roughness")
+        return _extract_constant_scalar(rs, 0.5) if rs is not None else None
+    return None
+
+
 def _is_dominant_glass_branch(
     fac_sock: Optional[Any],
     t1: str,
@@ -1672,7 +1942,9 @@ def _classify_shader_node(
             or (t2 == "BSDF_TRANSPARENT" and n1 is not None)
         ):
             transparent_slot = 1 if t1 == "BSDF_TRANSPARENT" else 2
+            transp_node = n1 if transparent_slot == 1 else n2
             x_node = n2 if transparent_slot == 1 else n1
+            x_type = canonical_node_type(x_node)
             res = _classify_shader_node(
                 x_node,
                 displacement_socket=displacement_socket,
@@ -1707,6 +1979,30 @@ def _classify_shader_node(
                     and "alpha" not in res.sockets_to_bake
                 ):
                     res.channels["alpha"] = {"value": 1.0}
+            elif _has_upstream_view_angle(fac_sock) and (
+                x_type in ("BSDF_GLASS", "BSDF_REFRACTION", "BSDF_GLOSSY", "BSDF_ANISOTROPIC")
+                or "transmission" in res.channels
+                or "transmission" in res.sockets_to_bake
+            ):
+                if x_type in ("BSDF_GLOSSY", "BSDF_ANISOTROPIC") and "transmission" not in res.channels:
+                    # Cycles fake architectural/window glass: Transparent + Glossy/Anisotropic via Fresnel/Layer Weight
+                    t_col = _extract_constant_rgb(get_input_socket(transp_node, "Color"), [1.0, 1.0, 1.0])
+                    g_col = res.channels.get("base_color", {}).get("value")
+                    if "base_color" in res.sockets_to_bake:
+                        res.sockets_to_bake.remove("base_color")
+                    if t_col is not None and max(t_col) > 0.1:
+                        glass_col = t_col
+                    elif isinstance(g_col, list) and len(g_col) >= 3 and max(g_col) > 0.1:
+                        glass_col = g_col
+                    else:
+                        glass_col = [1.0, 1.0, 1.0]
+                    res.channels["base_color"] = {"value": glass_col}
+                    res.channels["metallic"] = {"value": 0.0}
+                    res.channels["transmission"] = {"value": 1.0}
+                    res.channels["ior"] = {"value": _extract_upstream_fresnel_ior(fac_sock) or 1.5}
+                res.channels.pop("alpha", None)
+                if "alpha" in res.sockets_to_bake:
+                    res.sockets_to_bake.remove("alpha")
             else:
                 fac_cls = classify_socket(
                     fac_sock,
@@ -1810,17 +2106,38 @@ def _classify_shader_node(
                 return res
 
         # 4. General Mix/Add Shader fallback (bakes procedural combined channels)
+        leaves, has_add = _collect_leaf_shaders(surf_node)
+        bake_list: List[str] = ["base_color"]
+        channels_init: Dict[str, Dict[str, Any]] = {
+            "specular": {"value": 0.5},
+            "ior": {"value": 1.5},
+        }
+        for scalar_ch in ("metallic", "roughness"):
+            if not has_add and leaves:
+                leaf_vals = [_leaf_constant_scalar_channel(lf, scalar_ch) for lf in leaves]
+                if all(v is not None for v in leaf_vals):
+                    v0 = float(leaf_vals[0])  # type: ignore[arg-type]
+                    if all(abs(float(v) - v0) < 1e-5 for v in leaf_vals if v is not None):
+                        channels_init[scalar_ch] = {"value": round(v0, 6)}
+                        continue
+            bake_list.append(scalar_ch)
+
+        if not leaves or any(_leaf_needs_normal_bake(lf) for lf in leaves):
+            bake_list.append("normal")
+
+        if any(_leaf_has_transmission(lf) for lf in leaves):
+            bake_list.append("transmission")
+
         res = MaterialClassification(
+            channels=channels_init,
             is_mix_shader=True,
             surface_shader_type=stype,
-            sockets_to_bake=["base_color", "metallic", "roughness", "normal"],
+            sockets_to_bake=bake_list,
             uv=UVTransform(map_name=default_uv_map).to_dict(),
             warnings=[
                 f"Material uses {stype}; channels are baked into textures."
             ],
         )
-        res.channels["specular"] = {"value": 0.5}
-        res.channels["ior"] = {"value": 1.5}
         if displacement_socket is not None and resolve_upstream(displacement_socket) is not None:
             disp_cls = _classify_displacement_socket(displacement_socket, default_uv_map=default_uv_map)
             res.warnings.extend(w for w in disp_cls.warnings if w not in res.warnings)
@@ -1838,7 +2155,7 @@ def _classify_shader_node(
         )
         return res
 
-    # Fallback non-Principled shaders (Glass, Refraction, Emission, Diffuse, Glossy, Metallic, Transparent)
+    # Fallback non-Principled shaders (Glass, Refraction, Emission, Diffuse, Glossy, Metallic, Transparent, Subsurface)
     return _classify_fallback_shader(
         surf_node,
         stype,
@@ -1868,6 +2185,50 @@ def classify_material_output(
 
     surf_node, _ = upstream
     mat_bm = str(_node_prop(output_node, "blend_method", "") or "")
+    stype = canonical_node_type(surf_node)
+    if stype in _NON_SHADER_SURFACE_TYPES:
+        res = MaterialClassification(
+            surface_shader_type=stype,
+            uv=UVTransform(map_name=default_uv_map).to_dict(),
+        )
+        res.warnings.append(
+            f"Mapped {stype} connected directly to Material Output Surface as base_color."
+        )
+        res.channels["metallic"] = {"value": 0.0}
+        res.channels["roughness"] = {"value": 0.5}
+        col_cls = classify_socket(
+            surf_sock,
+            channel_name="base_color",
+            is_color=True,
+            default_value=[0.8, 0.8, 0.8],
+            default_uv_map=default_uv_map,
+        )
+        res.warnings.extend(w for w in col_cls.warnings if w not in res.warnings)
+        if col_cls.decision == BAKE:
+            res.sockets_to_bake.append("base_color")
+        elif col_cls.channel_data is not None:
+            res.channels["base_color"] = col_cls.channel_data
+            if col_cls.uv is not None:
+                res.uv = col_cls.uv.to_dict()
+        else:
+            res.channels["base_color"] = {"value": [0.8, 0.8, 0.8]}
+        if disp_sock is not None and resolve_upstream(disp_sock) is not None:
+            disp_cls = _classify_displacement_socket(disp_sock, default_uv_map=default_uv_map)
+            res.warnings.extend(w for w in disp_cls.warnings if w not in res.warnings)
+            if disp_cls.decision == BAKE:
+                res.sockets_to_bake.append("displacement")
+                res.bake_metadata["displacement"] = dict(
+                    disp_cls.bake_metadata or {"midlevel": 0.5, "scale": 0.05}
+                )
+            elif disp_cls.channel_data is not None:
+                res.channels["displacement"] = disp_cls.channel_data
+        res.blend_method = resolve_blend_method(
+            res.channels,
+            res.sockets_to_bake,
+            material_blend_method=mat_bm,
+        )
+        return res
+
     return _classify_shader_node(
         surf_node,
         displacement_socket=disp_sock,
@@ -1921,6 +2282,7 @@ def _classify_fallback_shader(
         )
         is_glass = stype in ("BSDF_GLASS", "BSDF_REFRACTION")
         is_glossy = stype in ("BSDF_GLOSSY", "BSDF_ANISOTROPIC", "BSDF_METALLIC")
+        is_sss = stype == "SUBSURFACE_SCATTERING"
         default_col = [1.0, 1.0, 1.0] if is_glass else [0.8, 0.8, 0.8]
 
         col_sock = get_input_socket(shader_node, "Color", "Base Color")
@@ -1984,6 +2346,17 @@ def _classify_fallback_shader(
                 res.channels["ior"] = {"value": default_ior}
         elif is_glossy:
             res.channels["metallic"] = {"value": 1.0}
+        elif is_sss:
+            res.channels["metallic"] = {"value": 0.0}
+            ior_sock = get_input_socket(shader_node, "IOR")
+            ior_val = _extract_constant_scalar(ior_sock, 1.4) if ior_sock is not None else 1.4
+            res.channels["ior"] = {"value": ior_val if ior_val is not None else 1.4}
+            scale_sock = get_input_socket(shader_node, "Scale")
+            sss_scale = _extract_constant_scalar(scale_sock, 0.05) if scale_sock is not None else 0.05
+            sss_entry: Dict[str, Any] = {"value": 1.0}
+            if sss_scale is not None:
+                sss_entry["scale"] = sss_scale
+            res.channels["subsurface"] = sss_entry
         elif stype == "BSDF_TRANSPARENT":
             res.channels["metallic"] = {"value": 0.0}
             res.channels["alpha"] = {"value": 0.0}
@@ -1993,13 +2366,23 @@ def _classify_fallback_shader(
         nrm_sock = get_input_socket(shader_node, "Normal")
         if nrm_sock is not None:
             nrm_cls = _classify_normal_socket(nrm_sock, default_uv_map=default_uv_map)
+            for w in nrm_cls.warnings:
+                if w not in res.warnings:
+                    res.warnings.append(w)
             if nrm_cls.decision == BAKE:
                 res.sockets_to_bake.append("normal")
             elif nrm_cls.channel_data is not None:
                 res.channels[nrm_cls.channel_name] = nrm_cls.channel_data
+                if nrm_cls.uv is not None:
+                    collected_uvs.append(nrm_cls.uv)
+            for extra_k, extra_v in nrm_cls.extra_channels.items():
+                res.channels[extra_k] = extra_v
 
     if displacement_socket is not None and resolve_upstream(displacement_socket) is not None:
         disp_cls = _classify_displacement_socket(displacement_socket, default_uv_map=default_uv_map)
+        for w in disp_cls.warnings:
+            if w not in res.warnings:
+                res.warnings.append(w)
         if disp_cls.decision == BAKE:
             res.sockets_to_bake.append("displacement")
             res.bake_metadata["displacement"] = dict(
