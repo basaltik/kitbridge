@@ -16,7 +16,7 @@ import tempfile
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from kitbridge.core import auth, blender, paths, pipeline, search
+from kitbridge.core import auth, blender, paths, pipeline, search, updates
 from kitbridge.core.client import BKClient
 from kitbridge.core.tasks import Dispatcher, Poller, TaskDict
 from kitbridge.ui import layout, prefs as prefs_mod
@@ -74,6 +74,7 @@ class KitbridgeApp:
         # Downloaded packages without a thumbnail (made by the dev CLI or by older versions):
         # BlenderKit is asked for them once per session, by asset id.
         self._thumb_lookups: Dict[str, Dict[str, Any]] = {}
+        self.update_info: Optional[Dict[str, str]] = None  # {"version", "url"} of a newer release
         self._started = False
         self._lock = threading.Lock()
 
@@ -120,6 +121,13 @@ class KitbridgeApp:
         if auth.is_logged_in():
             auth.request_user_profile(self.client)
         self._post("ready")
+        if self.prefs.get("check_updates", True):
+            from kitbridge import __version__
+
+            cache = os.path.join(paths.kitbridge_data_dir(create=True), "update_check.json")
+            info = updates.check_for_update(__version__, cache)
+            if info is not None:
+                self._post("update", info)
 
     # ── called from the UI (main thread) ──────────────────────────────────
 
@@ -362,6 +370,9 @@ class KitbridgeApp:
             if str(item.get("assetBaseId")) not in self.jobs:
                 self._start_job(item, source="website")
         elif kind == "redraw":
+            self._bump()
+        elif kind == "update":
+            self.update_info = event[1]
             self._bump()
         elif kind == "thumbnail":
             self._store_found_thumbnails()

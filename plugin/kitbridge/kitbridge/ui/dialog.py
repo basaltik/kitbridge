@@ -254,6 +254,8 @@ class KitbridgeDialog(c4d.gui.GeDialog):
             self._clear_cache()
         elif action == "toggle_menu":
             self.app.set_pref("show_main_menu", not self.app.prefs.get("show_main_menu", True))
+        elif action == "toggle_updates":
+            self.app.set_pref("check_updates", not self.app.prefs.get("check_updates", True))
 
     def _clear_cache(self) -> None:
         question = (

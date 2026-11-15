@@ -402,16 +402,20 @@ class SettingsArea(c4d.gui.GeUserArea):
 
         # Interface
         self._png("sec_interface", margin, 446)
-        r = rects["toggle_menu"]
-        on = bool(self.app.prefs.get("show_main_menu", True))
-        self.DrawSetPen(theme.color_vector("accent" if on else "line"))
-        self.DrawRectangle(r.x, r.y + 1, r.x + 15, r.y + 16)
-        if not on:
-            self.DrawSetPen(theme.color_vector("field"))
-            self.DrawRectangle(r.x + 1, r.y + 2, r.x + 14, r.y + 15)
-        else:
-            self._text("✓", r.x + 3, r.y + 1, "white")
-        self._text("Show Kitbridge menu (after restart)", r.x + 24, r.y + 1, "text")
+        for key, pref, label in (
+            ("toggle_menu", "show_main_menu", "Show Kitbridge menu (after restart)"),
+            ("toggle_updates", "check_updates", "Tell me when a new Kitbridge is out"),
+        ):
+            r = rects[key]
+            on = bool(self.app.prefs.get(pref, True))
+            self.DrawSetPen(theme.color_vector("accent" if on else "line"))
+            self.DrawRectangle(r.x, r.y + 1, r.x + 15, r.y + 16)
+            if not on:
+                self.DrawSetPen(theme.color_vector("field"))
+                self.DrawRectangle(r.x + 1, r.y + 2, r.x + 14, r.y + 15)
+            else:
+                self._text("✓", r.x + 3, r.y + 1, "white")
+            self._text(label, r.x + 24, r.y + 1, "text")
 
     def _png_centred(self, name: str, r: layout.Rect, under: str) -> None:
         scale = 2 if getattr(self, "GetPixelRatio", lambda: 1.0)() >= 1.5 else 1
@@ -576,6 +580,21 @@ class BottomFooterArea(c4d.gui.GeUserArea):
     def GetMinSize(self) -> tuple:
         return 360, 180
 
+    def InputEvent(self, msg: c4d.BaseContainer) -> bool:
+        if (
+            msg[c4d.BFM_INPUT_DEVICE] == c4d.BFM_INPUT_MOUSE
+            and msg[c4d.BFM_INPUT_CHANNEL] == c4d.BFM_INPUT_MOUSELEFT
+        ):
+            x, y = _local_xy(self, msg)
+            info = getattr(self.app, "update_info", None)
+            rect = getattr(self, "_update_rect", None)
+            if info and rect is not None and rect.contains(x, y):
+                import webbrowser
+
+                webbrowser.open(str(info.get("url")))
+                return True
+        return False
+
     def DrawMsg(self, x1: int, y1: int, x2: int, y2: int, msg: c4d.BaseContainer) -> None:
         self.OffScreenOn()
         self.SetClippingRegion(x1, y1, x2, y2)
@@ -610,6 +629,17 @@ class BottomFooterArea(c4d.gui.GeUserArea):
         else:
             self.DrawSetTextCol(theme.color_vector("accent_light"), c4d.COLOR_TRANS)
             self.DrawText("KITBRIDGE", sb_x1 + 12, sb_y1 + 8)
+
+        # A newer release: a link on the right of the label line
+        self._update_rect = None
+        info = getattr(self.app, "update_info", None)
+        if info:
+            link = "Kitbridge %s is out · Download" % info.get("version")
+            tw = self.DrawGetTextWidth(link)
+            lx = sb_x2 - 12 - tw
+            self.DrawSetTextCol(theme.color_vector("accent_light"), c4d.COLOR_TRANS)
+            self.DrawText(link, lx, sb_y1 + 8)
+            self._update_rect = layout.Rect(lx, sb_y1 + 4, tw, 20)
 
         # One line of status text in text colour
         status_text = getattr(self.app, "status", "")

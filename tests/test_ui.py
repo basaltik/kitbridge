@@ -212,7 +212,7 @@ def test_settings_folders_match_download_subfolders():
 
 def test_settings_hit_test():
     rects = layout.settings_rects(480)
-    for name in ("browse_folder", "open:hdris", "res:ORIGINAL", "clear_cache", "toggle_menu"):
+    for name in ("browse_folder", "open:hdris", "res:ORIGINAL", "clear_cache", "toggle_menu", "toggle_updates"):
         rect = rects[name]
         assert layout.settings_hit_test(rect.x + 2, rect.y + 2, 480) == name
     field = rects["folder_field"]

@@ -25,6 +25,7 @@ DEFAULTS: Dict[str, Any] = {
     "download_dir": "",
     "renderer": "auto",            # material system for imports; "auto" = the document's render engine
     "remember_renderer": False,    # keep "renderer" across sessions instead of resetting to auto
+    "check_updates": True,         # once a day, ask GitHub whether a newer Kitbridge is out
 }
 
 RENDERER_CHOICES = ("auto", "redshift", "arnold", "standard")

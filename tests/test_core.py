@@ -533,3 +533,45 @@ def test_secret_store_file_fallback_and_auth_persistence(tmp_path: Path) -> None
     auth.clear_tokens(backend="file", file_path=secrets_file)
     assert not auth.is_logged_in(backend="file", file_path=secrets_file)
     assert not os.path.exists(secrets_file)
+
+
+def test_update_check_compares_versions_and_caches(tmp_path):
+    from kitbridge.core import updates
+
+    assert updates.is_newer("v0.8.0", "0.7.0")
+    assert updates.is_newer("0.7.1", "0.7")
+    assert not updates.is_newer("v0.7.0", "0.7.0")
+    assert not updates.is_newer("garbage", "0.7.0")
+
+    cache = str(tmp_path / "update_check.json")
+    calls = []
+
+    def fetch(current):
+        calls.append(current)
+        return {"tag_name": "v0.8.0", "html_url": "https://github.com/basaltik/kitbridge/releases/tag/v0.8.0"}
+
+    info = updates.check_for_update("0.7.0", cache, now=1000.0, fetch=fetch)
+    assert info == {"version": "0.8.0", "url": "https://github.com/basaltik/kitbridge/releases/tag/v0.8.0"}
+    # Within a day the cached answer is used, no second request.
+    assert updates.check_for_update("0.7.0", cache, now=1000.0 + 3600, fetch=fetch) == info
+    assert len(calls) == 1
+    # Already up to date: nothing to show.
+    assert updates.check_for_update("0.8.0", cache, now=1000.0 + 7200, fetch=fetch) is None
+
+
+def test_update_check_never_opens_foreign_links_or_raises(tmp_path):
+    from kitbridge.core import updates
+
+    cache = str(tmp_path / "u.json")
+    info = updates.check_for_update(
+        "0.7.0", cache, now=1.0, fetch=lambda c: {"tag_name": "v9.0", "html_url": "https://evil.example/x"}
+    )
+    assert info["url"] == updates.RELEASES_PAGE
+
+    def offline(current):
+        raise OSError("no network")
+
+    assert updates.check_for_update("0.7.0", str(tmp_path / "v.json"), now=1.0, fetch=offline) is None
+    assert updates.check_for_update(
+        "0.7.0", str(tmp_path / "w.json"), now=1.0, fetch=lambda c: {"tag_name": "v1.0", "prerelease": True}
+    ) is None

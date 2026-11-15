@@ -256,7 +256,7 @@ def filter_row_hit_test(
 
 # ── Settings Screen Geometry ────────────────────────────────────────────────
 
-SETTINGS_HEIGHT = 516
+SETTINGS_HEIGHT = 542
 SETTINGS_FOLDERS = ("models", "materials", "hdris")
 SETTINGS_RESOLUTIONS = (
     ("512", "512", 40),
@@ -282,6 +282,7 @@ def settings_rects(width: int, margin: int = MARGIN) -> Dict[str, Rect]:
         "auto_blender": Rect(right - 64, 340, 64, 26),
         "clear_cache": Rect(right - 110, 402, 110, 26),
         "toggle_menu": Rect(margin, 474, min(inner, 300), 18),
+        "toggle_updates": Rect(margin, 500, min(inner, 300), 18),
     }
     gap = 8
     tile_w = (inner - gap * (len(SETTINGS_FOLDERS) - 1)) // len(SETTINGS_FOLDERS)
