@@ -175,3 +175,15 @@ Results: Bosch 0.764 -> **0.945** (dE 6.2 -> 3.2), Multi-Story Building 0.948 ->
 Others unchanged. Median SSIM 0.987, dE 2.64 -> **1.88**, IoU < 0.9: 4.
 Speed at 2048: Bosch 282 s -> 56 s, Nissan Skyline 49 s -> 36 s; `dev/bench/reconvert.py`
 reconverts the bench.
+
+## Run 9 (2026-11-16, exporter 12): laptop fixes
+From a user report on Gaming Laptop with Aging Effects (closed lid, black screen, unlit keys, a
+bent screen):
+- Driver-controlled object transforms are frozen before modifiers are applied (the lid angle was a
+  driver reading its Geometry Nodes modifier and fell back to 0).
+- Mixed shaders now bake emission and alpha when a leaf emits or is see-through; the emission bake
+  reads only real emission inputs; mixes are followed 24 levels deep instead of 8.
+- Displacement with scale 0 is ignored, and Redshift tessellation for displacement no longer uses
+  smooth subdivision (it rounded the low-poly lid).
+Bench: median SSIM 0.9875, dE 1.88 -> 1.86, no asset worse than noise (wall panel 0.983 -> 0.981,
+same lights and materials).
