@@ -621,3 +621,22 @@ def test_import_geometry_excludes_unwrapped_sds_generators(tmp_path: Path, monke
     assert sds_gen.alive is False
     assert [o.GetName() for o in outcome.objects] == ["TestModel", "Mesh"]
 
+
+
+def test_zero_scale_displacement_is_ignored(tmp_path: Path) -> None:
+    """A displacement with scale 0 moves nothing: no displacement (and no tessellation) in C4D."""
+    manifest = {
+        "schema_version": 1,
+        "asset": {"name": "Flat", "type": "model"},
+        "materials": [{
+            "name": "Plastic",
+            "channels": {
+                "base_color": {"value": [0.1, 0.1, 0.1]},
+                "displacement": {"texture": "textures/h.png", "scale": 0.0, "midlevel": 0.0, "method": "BOTH"},
+            },
+        }],
+    }
+    (tmp_path / "textures").mkdir()
+    (tmp_path / "textures" / "h.png").write_bytes(b"x")
+    plan = base.build_package_material_plans(manifest, str(tmp_path))[0]
+    assert not plan.has_displacement

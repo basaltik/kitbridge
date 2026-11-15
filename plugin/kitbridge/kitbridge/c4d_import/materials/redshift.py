@@ -489,6 +489,17 @@ def apply_displacement_object_tag(doc: Any, obj: Any, warnings: List[str]) -> Op
     )
     compat.set_resolved_parameter(tag, override_param, True)
     compat.set_resolved_parameter(tag, tess_param, True)
+    # Cycles displaces the mesh as it is; Redshift's default smooth tessellation would round it
+    # like a Subdivision Surface (a laptop's flat screen bent at the edges).
+    smooth_param = compat.resolve_description_param(
+        tag,
+        context="redshift.object_tag.smooth_subdivision",
+        idents=("REDSHIFT_OBJECT_GEOMETRY_SMOOTHSUBDIVISIONENABLED", "smoothsubdivisionenabled"),
+        names=("Smooth Subdivision",),
+        fallback_c4d_symbols=("REDSHIFT_OBJECT_GEOMETRY_SMOOTHSUBDIVISIONENABLED",),
+        prefer_dtypes=(dtype_bool,),
+    )
+    compat.set_resolved_parameter(tag, smooth_param, False)
     disp_ok = _enable_tag_displacement(tag, dtype_bool)
 
     if disp_ok:

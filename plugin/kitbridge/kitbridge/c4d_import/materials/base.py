@@ -583,7 +583,12 @@ def build_material_plan(
         disp_entry = channels["displacement"]
         # Packages before exporter 7 have no method: keep their old behaviour (true displacement).
         disp_method = str(disp_entry.get("method") or "DISPLACEMENT").upper()
-        if "texture" in disp_entry:
+        try:
+            disp_scale = float(disp_entry.get("scale", 1.0))
+        except (TypeError, ValueError):
+            disp_scale = 1.0
+        # A zero scale moves nothing; displacing would only tessellate (and round) the mesh.
+        if "texture" in disp_entry and abs(disp_scale) > 1e-9:
             tex_op = _register_texture_op(
                 "displacement",
                 disp_entry,
