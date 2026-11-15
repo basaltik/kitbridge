@@ -97,6 +97,10 @@ choose *More info → Run anyway*. To remove Kitbridge, use *Apps → Installed 
 settings, or run the installer with `/uninstall` (add `/purge` to also delete downloaded assets,
 settings and the login).
 
+To update, run the newer installer over the old one: it replaces the plugin and keeps your
+downloads, settings and login. Kitbridge checks GitHub once a day and shows a *Download* link in
+its status box when a new version is out (turn it off in the settings).
+
 Downloaded and converted assets live in `%USERPROFILE%\blenderkit_data\kitbridge_cache`.
 
 ## Known limitations
