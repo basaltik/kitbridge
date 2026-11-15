@@ -1802,9 +1802,14 @@ def _extract_upstream_fresnel_ior(socket: Any, max_depth: int = 16) -> Optional[
     return None
 
 
+# Layered asset materials stack many Mix Shaders (dust, grunge, fingerprints, scratches, then the
+# real shader): a keyboard's glow sat nine mixes deep.
+MAX_SHADER_MIX_DEPTH = 24
+
+
 def _collect_leaf_shaders(
     node: Any,
-    max_depth: int = 8,
+    max_depth: int = MAX_SHADER_MIX_DEPTH,
 ) -> Tuple[List[Any], bool]:
     """Return ``(leaf_shader_nodes, has_add_shader)`` under a ``MIX_SHADER``/``ADD_SHADER`` tree."""
     leaves: List[Any] = []
@@ -1860,6 +1865,46 @@ def _leaf_has_transmission(leaf: Any) -> bool:
             val = _extract_constant_scalar(tr_s, 0.0)
             if val is not None and val > 1e-4:
                 return True
+    return False
+
+
+def _leaf_emits(leaf: Any) -> bool:
+    """True when a leaf shader of a mix can emit light (an Emission node, or Principled emission)."""
+    ltype = canonical_node_type(leaf)
+    if ltype == "EMISSION":
+        strength = get_input_socket(leaf, "Strength")
+        if strength is None or resolve_upstream(strength) is not None:
+            return True
+        val = _extract_constant_scalar(strength, 1.0)
+        return val is None or val > 1e-6
+    if ltype == "BSDF_PRINCIPLED":
+        color = get_input_socket(leaf, "Emission Color", "Emission")
+        strength = get_input_socket(leaf, "Emission Strength")
+        if color is None or strength is None:
+            return False
+        s_val = _extract_constant_scalar(strength, 1.0)
+        if s_val is not None and s_val <= 1e-6:
+            return False
+        if resolve_upstream(color) is not None:
+            return True
+        c_val = _extract_constant_rgb(color, [0.0, 0.0, 0.0])
+        return c_val is not None and max(c_val) > 1e-6
+    return False
+
+
+def _leaf_has_alpha(leaf: Any) -> bool:
+    """True when a leaf shader of a mix is (partly) see-through: Transparent BSDF or Principled alpha."""
+    ltype = canonical_node_type(leaf)
+    if ltype == "BSDF_TRANSPARENT":
+        return True
+    if ltype == "BSDF_PRINCIPLED":
+        alpha = get_input_socket(leaf, "Alpha")
+        if alpha is None:
+            return False
+        if resolve_upstream(alpha) is not None:
+            return True
+        val = _extract_constant_scalar(alpha, 1.0)
+        return val is not None and val < 1.0 - 1e-4
     return False
 
 
@@ -1926,7 +1971,7 @@ def _classify_shader_node(
             material_blend_method=material_blend_method,
         )
 
-    if stype in ("MIX_SHADER", "ADD_SHADER") and depth < 8:
+    if stype in ("MIX_SHADER", "ADD_SHADER") and depth < MAX_SHADER_MIX_DEPTH:
         s1_sock, s2_sock = _get_shader_branch_sockets(surf_node)
         up1 = resolve_upstream(s1_sock)
         up2 = resolve_upstream(s2_sock)
@@ -2127,6 +2172,12 @@ def _classify_shader_node(
 
         if any(_leaf_has_transmission(lf) for lf in leaves):
             bake_list.append("transmission")
+        # Glowing keys behind a Mix Shader, a half-transparent screen film: without these the mix
+        # came out unlit and opaque.
+        if any(_leaf_emits(lf) for lf in leaves):
+            bake_list.append("emission")
+        if any(_leaf_has_alpha(lf) for lf in leaves):
+            bake_list.append("alpha")
 
         res = MaterialClassification(
             channels=channels_init,

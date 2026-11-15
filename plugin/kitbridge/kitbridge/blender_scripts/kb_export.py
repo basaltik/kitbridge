@@ -550,6 +550,38 @@ def _prepare_material_sphere_scene(asset_name: str = "", asset_id: str = "") -> 
     return sphere_obj
 
 
+_TRANSFORM_PATHS = (
+    "location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "scale",
+    "delta_location", "delta_rotation_euler", "delta_rotation_quaternion", "delta_scale",
+)
+
+
+def _freeze_driven_transforms(scene: Any) -> None:
+    """Bake driver-controlled object transforms into the objects themselves.
+
+    A driver often reads a modifier input (a laptop lid angle from its Geometry Nodes modifier).
+    Applying the modifiers removes that input, the driver falls back to 0 and the lid closes.
+    """
+    driven = []
+    for obj in scene.objects:
+        anim = obj.animation_data
+        if anim is None:
+            continue
+        drivers = [fc for fc in anim.drivers if fc.data_path in _TRANSFORM_PATHS]
+        if drivers:
+            driven.append((obj, drivers))
+    if not driven:
+        return
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    frozen = [(obj, drivers, obj.evaluated_get(depsgraph).matrix_basis.copy()) for obj, drivers in driven]
+    for obj, drivers, matrix in frozen:
+        for fc in drivers:
+            with contextlib.suppress(Exception):
+                obj.animation_data.drivers.remove(fc)
+        obj.matrix_basis = matrix
+        log_info(f"froze the driven transform of {obj.name!r}")
+
+
 def prepare_scene(asset_type: str, asset_name: str = "", asset_id: str = "") -> bool:
     """Prepare the scene for export; return ``only_lights`` flag."""
     scene = bpy.context.scene
@@ -571,6 +603,7 @@ def prepare_scene(asset_type: str, asset_name: str = "", asset_id: str = "") -> 
         obj.hide_select = False
 
     _realize_collection_instances(scene, view_layer)
+    _freeze_driven_transforms(scene)
     _apply_modifiers_and_convert_meshes(scene, view_layer, cutters)
     _flatten_rig_to_single_root(asset_name)
     only_lights = _prune_non_asset_objects(scene, cutters)
@@ -1294,7 +1327,12 @@ def _find_bpy_principled_socket(bsdf_node: Any, channel_name: str) -> Optional[A
     if channel_name == "base_color":
         return shader_graph.get_input_socket(bsdf_node, "Base Color", "Color")
     if channel_name == "emission":
-        return shader_graph.get_input_socket(bsdf_node, "Emission Color", "Emission", "Color")
+        stype = shader_graph.canonical_node_type(bsdf_node)
+        if stype == "EMISSION":
+            return shader_graph.get_input_socket(bsdf_node, "Color")
+        if stype == "BSDF_PRINCIPLED":
+            return shader_graph.get_input_socket(bsdf_node, "Emission Color", "Emission")
+        return None  # a diffuse/glossy/transparent "Color" is not light
     if channel_name in ("normal", "bump"):
         return shader_graph.get_input_socket(bsdf_node, "Normal")
     for ch, names, _, _ in shader_graph.PRINCIPLED_CHANNEL_SPECS:
@@ -1434,7 +1472,7 @@ def _build_channel_emission_branch(
 ) -> Any:
     """Recursively build an Emission/MixShader tree representing *channel_name* for *shader_node*."""
     stype = shader_graph.canonical_node_type(shader_node) if shader_node is not None else ""
-    if depth < 8 and shader_node is not None and stype in ("MIX_SHADER", "ADD_SHADER"):
+    if depth < shader_graph.MAX_SHADER_MIX_DEPTH and shader_node is not None and stype in ("MIX_SHADER", "ADD_SHADER"):
         shader_inputs = [s for s in shader_node.inputs if s.type == "SHADER"]
         sub1 = (
             shader_inputs[0].links[0].from_node
@@ -1512,9 +1550,16 @@ def _build_channel_emission_branch(
         em.inputs["Color"].default_value = _fallback_leaf_channel_rgba(shader_node, channel_name)
 
     if channel_name == "emission" and shader_node is not None:
-        em_str_sock = shader_graph.get_input_socket(shader_node, "Emission Strength", "Strength")
+        em_str_sock = (
+            shader_graph.get_input_socket(shader_node, "Emission Strength", "Strength")
+            if shader_graph.canonical_node_type(shader_node) in ("EMISSION", "BSDF_PRINCIPLED")
+            else None
+        )
         if em_str_sock is not None and em_str_sock.is_linked:
             node_tree.links.new(em_str_sock.links[0].from_socket, em.inputs["Strength"])
+        elif em_str_sock is not None:
+            with contextlib.suppress(Exception):
+                em.inputs["Strength"].default_value = float(em_str_sock.default_value)
 
     return em.outputs["Emission"]
 
